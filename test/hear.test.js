@@ -26,7 +26,8 @@ const tracksOf = (planes, s, trim) => planes.map((p) => predict(p(s), site, { lo
 // ear, the ones in `sounding` are turned into sound, and the ear hears it a second at a time. `each`
 // gets the status after every second. `floor` and `trim` may be functions, to feed tuning back in.
 // `sound` may change the tracks that are turned into sound: it gets them and the second they are for.
-function listen({ seconds, feed = [], sounding = feed, floor = 50, trim = {}, synth = {}, sound = (tracks) => tracks, each }) {
+// `add` may add sound of its own to each 5 s of audio: it gets the samples and the second they start at.
+function listen({ seconds, feed = [], sounding = feed, floor = 50, trim = {}, synth = {}, sound = (tracks) => tracks, add, each }) {
   const ear = createEar({ sampleRate: RATE });
   const voice = createSynth({ sampleRate: RATE, ...synth });
   const now = (v) => (typeof v === 'function' ? v() : v);
@@ -34,6 +35,7 @@ function listen({ seconds, feed = [], sounding = feed, floor = 50, trim = {}, sy
     const at = START + s * 1000;
     ear.update({ at, tracks: tracksOf(feed, s, now(trim)), trim: now(trim), floor: now(floor) });
     const pcm = voice.render(sound(tracksOf(sounding, s), s), at, at, 5);
+    add?.(pcm, s);
     for (let i = 0; i < 5; i++) {
       ear.push(pcm.subarray(i * RATE, (i + 1) * RATE), at + (i + 1) * 1000);
       each?.(ear.status(), s + i + 1, ear);
@@ -475,4 +477,123 @@ test('a trim in effect changes neither the peak that is stored nor the floor tha
     assert.ok(Math.abs(pass.floor - passes[1].floor) <= 0.5, `floor learned as ${passes.map((o) => o.floor)}`);
   }
   assert.ok(Math.abs(passes[1].floor - 50) < 2);
+});
+
+// Curves: the tones heard, fitted as a straight flyby (doppler.js), the other way round from `heard`.
+// The fitted curves the engine reported over a run, second by second: [{ s, ...curve }].
+function curvesOf(run) {
+  const out = [];
+  listen({ ...run, each: (status, s) => out.push(...status.curves.filter((c) => c.at != null).map((c) => ({ s, ...c }))) });
+  return out;
+}
+const middle = (values) => values.toSorted((a, b) => a - b)[values.length >> 1];
+
+test('a propeller pass is fitted as a flyby: whose it was, when it passed, how near, and that it is a propeller', () => {
+  const fits = curvesOf({ seconds: 110, feed: [prop, behind, beside], sounding: [prop], synth: { background: 40 } });
+  const mine = fits.filter((c) => c.hex === 'a1b2c3');
+  assert.ok(mine.length >= 15, `fitted for ${mine.length} s`);
+  assert.deepEqual(fits.filter((c) => c.hex !== 'a1b2c3'), [], 'never a decoy, nor something with no track');
+  // It passes 1000 ft overhead at 140 kt, and the feed is right on time.
+  assert.ok(mine.every((c) => Math.abs(c.offset) <= 2.5), `offsets ${mine.map((c) => c.offset)}`);
+  assert.ok(Math.abs(middle(mine.map((c) => c.offset))) <= 1, `offset ${middle(mine.map((c) => c.offset))} s`);
+  assert.ok(Math.abs(middle(mine.map((c) => c.distance)) / 305 - 1) < 0.2, `distance ${middle(mine.map((c) => c.distance))} m`);
+  assert.ok(Math.abs(middle(mine.map((c) => c.speed)) / 72 - 1) < 0.05, 'the speed is the track\'s');
+  assert.ok(mine.filter((c) => c.kind === 'propeller').length >= 0.8 * mine.length, 'a propeller');
+  assert.ok(mine.every((c) => c.rms < 10 && c.until === null && c.tried.some((t) => t.hex === 'a1b2c3' && t.why === null)));
+  // Its emitted harmonics, all on its note.
+  const note = fundamentalOf({ hex: 'a1b2c3', category: 'A1' });
+  assert.ok(mine.at(-1).hz.every((hz) => Math.abs(hz / note - Math.round(hz / note)) < 0.03 * Math.round(hz / note)), `${mine.at(-1).hz} on ${note}`);
+});
+
+test('a feed running 6 s late is measured by the curve, which still belongs to that aircraft', () => {
+  const late = (s) => prop(s - 6); // where it was 6 s before
+  const mine = curvesOf({ seconds: 110, feed: [late], sounding: [prop] }).filter((c) => c.hex === 'a1b2c3');
+  assert.ok(mine.length >= 10, `fitted for ${mine.length} s`);
+  const offset = middle(mine.map((c) => c.offset));
+  assert.ok(Math.abs(offset + 6) <= 1.5, `heard ${offset} s from its track: 6 s early`);
+});
+
+test('a curve that fits two aircraft is neither\'s, and says so', () => {
+  // The propeller aircraft with its feed 6 s late, and a silent one crossing 500 ft higher at the
+  // moment it really passes: the curve fits both tracks, and nothing tells which made it.
+  const late = (s) => prop(s - 6);
+  const above = plane({ hex: 'silent', category: 'A1', track: 90, kt: 140, ft: 1500, over: 65 });
+  const all = [];
+  listen({ seconds: 110, feed: [late, above], sounding: [prop], floor: 45, synth: { background: 40 }, each: (status) => all.push(...status.curves) });
+  assert.deepEqual(all.filter((c) => c.hex), [], 'no aircraft is named');
+  const both = all.filter((c) => c.tried.filter((t) => t.why === 'ambiguous').length === 2);
+  assert.ok(both.length >= 10, `said to fit both for ${both.length} s`);
+  assert.ok(both.every((c) => c.tried.every((t) => t.offset != null)));
+});
+
+// Whines from something flying straight past at `v` m/s, `d` m away at its nearest, `over` s in, as
+// a microphone hears them: each tone's pitch and loudness from where it was when it left.
+const whines = (hzs, { v = 72, d = 305, over = 65, amp = 0.01 } = {}) => (pcm, s) => {
+  for (let i = 0; i < pcm.length; i++) {
+    const heard = s + i / RATE;
+    let left = heard;
+    for (let k = 0; k < 4; k++) left = heard - Math.hypot(v * (left - over), d) / 343;
+    const r = Math.hypot(v * (left - over), d);
+    for (const hz of hzs) pcm[i] += ((amp * d) / r) * Math.sin(2 * Math.PI * hz * left);
+  }
+};
+
+test('two curves heard over the same stretch are each fitted as themselves', () => {
+  // A 380 Hz whine passing 305 m away and a 1600 Hz one 600 m away, at the same moment, beside a
+  // silent aircraft on the nearer one's path. Their tones are seen in the same columns, and each
+  // is fitted with that aircraft's speed.
+  const near = whines([380]);
+  const far = whines([1600], { d: 600 });
+  const silent = plane({ hex: 'silent', category: 'A1', track: 0, kt: 140, ft: 1000, over: 65 });
+  const seconds = [];
+  listen({
+    seconds: 110,
+    feed: [silent],
+    sounding: [],
+    synth: { background: 40 },
+    add: (pcm, s) => (near(pcm, s), far(pcm, s)),
+    each: (status, s) => {
+      const fits = status.curves.filter((c) => c.hex === 'silent'); // both fitted with its speed
+      if (fits.length === 2) seconds.push({ s, hz: fits.map((c) => c.hz[0]).toSorted((a, b) => a - b) });
+    },
+  });
+  assert.ok(seconds.length >= 20, `two curves for ${seconds.length} s`);
+  for (const { s, hz } of seconds) {
+    assert.ok(Math.abs(hz[0] / 380 - 1) < 0.02 && Math.abs(hz[1] / 1600 - 1) < 0.02, `${s} s: fitted ${hz} Hz`);
+  }
+});
+
+test('a pass with no track gets a curve with no aircraft, its speed, and when the noise may end', () => {
+  const fits = [];
+  listen({ seconds: 110, feed: [], sounding: [prop], each: (status, s) => fits.push(...status.curves.filter((c) => c.at != null).map((c) => ({ s, noise: status.noise, ...c }))) });
+  assert.ok(fits.length >= 5, `fitted for ${fits.length} s`);
+  assert.ok(fits.every((c) => c.hex === null && c.offset === null && c.noise && c.until > c.at && c.tried.length === 0));
+  const speed = middle(fits.map((c) => c.speed));
+  const distance = middle(fits.map((c) => c.distance));
+  assert.ok(Math.abs(speed / 72 - 1) < 0.35, `speed ${speed} m/s, really 72`);
+  assert.ok(Math.abs(distance / 305 - 1) < 0.4, `distance ${distance} m, really 305`);
+  assert.ok(fits.filter((c) => c.kind === 'propeller').length >= 0.8 * fits.length);
+});
+
+test('the roar of a jet and the whine of a motor give no curve to any aircraft', () => {
+  assert.deepEqual(curvesOf({ ...loud50, feed: [jet] }), [], 'a roar has no tones to trace');
+  for (const tone of [motor(650, -0.003), motor(180, -0.004, -0.00004, 4)]) {
+    const fits = curvesOf({ seconds: 150, feed: [silent('A1', 140, 1000, 70)], sounding: [], synth: { tone } });
+    assert.deepEqual(fits.filter((c) => c.hex), [], `${tone.hz} Hz: no aircraft is given a motor's curve`);
+  }
+});
+
+test('the engine says why it did not find the tones of an expected aircraft', () => {
+  const why = new Map();
+  listen({
+    seconds: 110,
+    feed: [prop, behind, beside],
+    sounding: [prop],
+    each: (status) => status.tried.forEach((t) => why.set(`${t.hex} ${t.why}`, (why.get(`${t.hex} ${t.why}`) ?? 0) + 1)),
+  });
+  assert.ok(why.get('a1b2c3 null') >= 20, 'found, for the one making the sound');
+  assert.ok(!why.has('decoy1 null') && !why.has('decoy2 null'), 'never for the decoys');
+  const reasons = new Set([...why.keys()].map((k) => k.split(' ')[1]));
+  for (const r of reasons) assert.ok(['null', 'short', 'tone', 'steady', 'rival', 'drift', 'weak'].includes(r), r);
+  assert.ok(reasons.has('rival') || reasons.has('steady'), `the decoys' reasons: ${[...why.keys()].filter((k) => k.startsWith('decoy'))}`);
 });

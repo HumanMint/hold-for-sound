@@ -5,7 +5,7 @@
 // The line under the switch is the consent: it must go on saying everything that is sent, the
 // spectrogram and what can show in it included. Change it when share-core.js sends anything new.
 
-import { createShare } from './share-core.js?v=5';
+import { createShare } from './share-core.js?v=7';
 
 const send = (name, detail) => document.dispatchEvent(new CustomEvent(name, { detail }));
 // The switch is remembered in this browser. A page loaded with it on starts a new session. A tab
@@ -60,7 +60,7 @@ async function post(text, off) {
 const core = createShare({ post, id: () => grant.id, announce: (id) => {
   send('hfs:share', { id, token: id ? grant?.token : null });
   if (!id) { revoke(grant); grant = null; }
-}, changed: () => { starting = false; waiting = ''; change++; stored(false); show(); } });
+}, changed: () => { starting = false; waiting = ''; change++; stored(false); show(); }, trimmed: () => show() });
 for (const name of ['update', 'status', 'tune', 'heard']) document.addEventListener(`hfs:${name}`, (e) => core[name](e.detail));
 let show = () => {};
 
@@ -111,7 +111,7 @@ function build() {
     'afterbegin',
     `<div class="share">
       <label><input type="checkbox" role="switch" aria-describedby="shares"> Share data with the developer</label>
-      <p id="shares">Sends the set's coordinates, the page's predictions, your marks, sound levels, and a detailed spectrogram of the sound from 30 s before to 30 s after each aircraft or aircraft-like noise, and to a minute after each mark. Not a recording, but sounds near the microphone, speech included, can show in it. Audio is never sent. Also shares your approximate connection region (from Cloudflare) and rounded searched locations with lookup results, kept for about 24 hours, without the addresses typed. Session files are kept for up to 90 days. Only the developer sees them. Your choice is remembered in this browser. <a href="about.html#privacy" target="_blank" rel="noopener">Privacy</a></p>
+      <p id="shares">Sends the set's coordinates, the page's predictions, your marks, sound levels, and a detailed spectrogram of the sound: from 30 s before to 30 s after each predicted aircraft, and to a minute after each mark; and from 10 s before to 10 s after other aircraft-like noise lasting 20 s or more, up to 15 min an hour. Not a recording, but sounds near the microphone, speech included, can show in it. Audio is never sent. Also shares your approximate connection region (from Cloudflare) and rounded searched locations with lookup results, kept for about 24 hours, without the addresses typed. Session files are kept for up to 90 days. Only the developer sees them. Your choice is remembered in this browser. <a href="about.html#privacy" target="_blank" rel="noopener">Privacy</a></p>
       <p class="share-id" hidden>Session ID <span></span></p>
       <span class="share-state" role="status"></span>
     </div>
@@ -152,7 +152,8 @@ function build() {
     session.hidden = !(core.on && grant);
     session.lastElementChild.textContent = grant?.id ?? '';
     toggle.checked = starting || core.on || !!waiting;
-    document.querySelector('.share-state').textContent = starting ? 'Starting sharing…' : waiting;
+    // Near the session's size the server takes no more spectrogram; the rest is still sent.
+    document.querySelector('.share-state').textContent = starting ? 'Starting sharing…' : waiting || (core.on && !core.spec ? 'Spectrogram: stopped, session full' : '');
   };
 
   toggle.addEventListener('change', () => {

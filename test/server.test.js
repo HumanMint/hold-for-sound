@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,4 +62,51 @@ test('a feed request given up on before its answer leaves nothing in the session
   // One that waits for its answer is kept.
   assert.equal((await fetch(`${url}/api/aircraft?lat=33.938&lon=-118.440&log=${id}`, { headers })).status, 200);
   assert.equal(feed().length, 1);
+});
+
+// Flight providers stood in for by `answer(host)`, on a clock moved by `at(ms)`; `calls()` lists the hosts asked.
+function providers(answer) {
+  const dir = temp();
+  const [clock, calls, mock] = ['clock', 'calls', 'fetch.mjs'].map((name) => join(dir, name));
+  writeFileSync(clock, '0');
+  writeFileSync(calls, '');
+  writeFileSync(mock, `import { readFileSync, appendFileSync } from 'node:fs';
+    const realNow = Date.now; Date.now = () => realNow() + Number(readFileSync(${JSON.stringify(clock)}, 'utf8'));
+    globalThis.fetch = async (url) => { const host = new URL(url).hostname; appendFileSync(${JSON.stringify(calls)}, host + '\\n'); return (${answer})(host); };`);
+  return {
+    env: { NODE_OPTIONS: `--import=${mock}` },
+    at: (ms) => writeFileSync(clock, String(ms)),
+    calls: () => readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean),
+  };
+}
+
+test('without PUBLIC_HOST too, a provider that said to wait is not asked again until then', async (t) => {
+  // Both providers say 6 hours. The page asks again within a minute (feed.js): the server answers
+  // from the pause, and asks neither.
+  const up = providers(() => new Response('rate limit exceeded', { status: 429, headers: { 'retry-after': '21600' } }));
+  const url = await serve(t, up.env);
+  const first = await fetch(`${url}/api/aircraft?lat=34&lon=-118`);
+  assert.equal(first.status, 429);
+  assert.ok(Number(first.headers.get('retry-after')) >= 21_590);
+  assert.deepEqual(up.calls(), ['api.adsb.lol', 'opendata.adsb.fi']);
+  up.at(61_000);
+  const again = await fetch(`${url}/api/aircraft?lat=34&lon=-118`);
+  assert.equal(again.status, 429);
+  assert.ok(Math.abs(Number(again.headers.get('retry-after')) - 21_539) <= 2, again.headers.get('retry-after'));
+  assert.equal(up.calls().length, 2, 'neither provider was asked again');
+});
+
+test('without PUBLIC_HOST, a pause from adsb.lol leaves adsb.fi in use, and asks adsb.lol no more meanwhile', async (t) => {
+  const up = providers((host) => (host === 'api.adsb.lol' ? new Response('', { status: 429, headers: { 'retry-after': '21600' } }) : Response.json({ ac: [], now: Date.now() })));
+  const url = await serve(t, up.env);
+  for (const ms of [0, 61_000, 3600_000]) {
+    up.at(ms);
+    const res = await fetch(`${url}/api/aircraft?lat=34&lon=-118`);
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).source, 'opendata.adsb.fi');
+  }
+  assert.deepEqual(up.calls(), ['api.adsb.lol', 'opendata.adsb.fi', 'opendata.adsb.fi', 'opendata.adsb.fi']);
+  up.at(21_601_000);
+  await fetch(`${url}/api/aircraft?lat=34&lon=-118`);
+  assert.equal(up.calls().at(-2), 'api.adsb.lol', 'and asks it again once its pause is over');
 });

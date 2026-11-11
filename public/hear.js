@@ -26,7 +26,7 @@
 //       Aircraft predicted within 15 dB of `floor` are the ones it tries to match the sound to.
 //
 //   ear.status() → what is happening now, refreshed once a second of audio:
-//     { at, ready, signal, level, background, rise, noise, expected, heard }
+//     { at, ready, signal, level, background, rise, noise, expected, heard, tried, curves }
 //       ready       false for the first 20 s, while it learns the background
 //       signal      false while the microphone gives nothing: digital silence (110 dB or more under full
 //                   scale), or mute(true). Nothing is heard or learned then, and `ready` is false.
@@ -45,6 +45,27 @@
 //                   how 'level'     hex is null: aircraft-like noise that cannot be pinned on one track.
 //                                   `candidates` lists the aircraft it could be. An empty list means no
 //                                   predicted track explains it (no transponder, or not an aircraft).
+//       tried       [{ hex, why }]: the expected aircraft whose tones were looked for along their Doppler
+//                   curves this second, and why they were not found: null when they were (they are in
+//                   `heard`), 'short' (too little of its track in the last 30 s), 'tone' (nothing piled
+//                   up along its curve), 'steady' (what did piles up as well with nothing moving),
+//                   'rival' (as well along another aircraft's curve, or it would run off the
+//                   spectrogram there), 'drift' (as well along a steady drift) or 'weak' (too little).
+//       curves      [{ from, to, hex, at, distance, speed, hz, rms, miss, seconds, offset, until, kind,
+//                   tried }]: tones heard in the last 30 s whose pitch bent, one entry for each motor
+//                   (up to 3), fitted as a straight flyby by doppler.js (see "Curves" below). `from`
+//                   and `to` are when the tones were seen. With a fit: `at` is when its closest approach
+//                   was heard, `distance` (m) how near it came, `speed` (m/s, the track's when it is an
+//                   aircraft's), `hz` the emitted pitches, `rms` (Hz) and `miss` (bins) how well the
+//                   curve fits, and `kind` 'propeller', 'jet' or null from the tones. `hex` is the
+//                   aircraft it was matched to, and then `offset` is the seconds its closest approach was
+//                   heard after (+) or before (-) its track said. With hex null, `until` is the epoch ms
+//                   the noise might fade, from a fit with no track. With no fit, `at` is null.
+//                   `tried` is [{ hex, why, offset }]: each aircraft it was tried against, and why it was
+//                   not that aircraft's: null when it was, 'shape' (the curve does not fit its speed),
+//                   'partial' (its closest approach is not among the tones heard yet), 'time' (closest
+//                   approach more than SLIDE s from its track's), 'distance', or 'ambiguous' (it fits
+//                   another aircraft as well, and then it is neither's).
 //
 //   ear.curve(hex, hz, fromMs, toMs, stepMs) → Float32Array   Where a tone emitted at `hz` by that
 //       aircraft is heard over a stretch of past and future time, to draw on the spectrogram and ahead
@@ -104,11 +125,25 @@
 // unless it is no swell (it switched on or off, or stayed put) or is mostly a hum. Either way, a pass
 // is measured, and believed, only if its loudness peaked when that aircraft was predicted loudest.
 //
+//
+// Curves: the other way round, from the sound to the aircraft. Every tone a single column shows (the
+// same test follow() makes) is joined to the next column's where it moved smoothly, and tones that
+// moved in step are one motor's harmonics. Each motor whose pitch bent is fitted as a straight flyby
+// (doppler.js), first with the speed of each candidate whose own pitch falls through its emitted pitch
+// near it. A fit whose closest approach and distance agree with that track's, and no other's, makes it
+// that aircraft's curve, and says how late or early the feed was. One that is no candidate's, while there is noise, is
+// fitted with its speed free, and kept if its speed and distance are an aircraft's (ROAD, FAST): then
+// it says roughly how long the noise will last. A curve names nothing in `heard` and changes no pass.
+//
 // shortcut: every threshold in this file is a guess that has only met synth.js, never a real aircraft
-// through a real phone; revisit them all once there are recordings from a set.
-// shortcut: the track's timing is trusted. With synth.js, a feed 2 s late changes nothing; at 3 s
-// tones are matched too briefly to be trusted, and at 4 s about half the passes are heard but not
-// measured. Search over a time offset per aircraft if real feeds lag more than a second or two.
+// through a real phone; revisit them all once there are recordings from a set. The curve thresholds
+// have also met three logged passes beside an airport.
+// shortcut: the track's timing is trusted for `heard`. With synth.js, a feed 2 s late changes nothing;
+// at 3 s tones are matched too briefly to be trusted, and at 4 s about half the passes are heard but
+// not measured. Curves measure the offset (`curves[].offset`) but do not move the matching.
+// shortcut: a curve is only as straight a flyby as the aircraft flew. A propeller aircraft changing
+// power on final moves its pitch as a nearer, earlier pass would. On the one logged, the fit put its
+// closest approach 9 s before the feed did, and whether that was the feed or the engine is not known.
 // shortcut: tones are pinned on an aircraft only while its Doppler curve bends within the 30 s searched
 // (about 30 s of a close pass). On the straight parts either side they could be any steady or
 // drifting tone, and the sound is reported as noise with that aircraft as a candidate.
@@ -126,6 +161,8 @@
 // shortcut: where aircraft are audible nearly all the time the quiet between them is never heard, so
 // the background includes them and floors come out high (5 dB beside LAX in the recorded traffic);
 // learn the background only while nothing is predicted if that matters.
+
+import { fit as fitFlyby, kind, after } from './doppler.js';
 
 export const FMIN = 50;
 export const BINS = 304;
@@ -162,6 +199,17 @@ const ALONE = 10; // dB under an aircraft's own level at which another stops add
 const NEAR = 3; // dB under its predicted peak an aircraft may be when the sound peaks, for that peak to be its own
 const SLIP = 3000; // ms the sound's peak may be from the moment the aircraft was predicted loudest
 const WAITING = 200; // observations kept for a caller that is not collecting them
+// Curves (see "Curves" above):
+const BEND = 2; // bins a traced tone has to move for its curve to be fitted
+const FITS = 0.6; // bins a curve's tones may be from the fitted flyby, on average, and still be one
+const SLIDE = 15; // s a fitted closest approach may be from a track's for the curve to be that aircraft's
+const AWAY = 2; // times nearer or further than the track's a fitted distance may be, for the same
+const ROAD = { speed: 30, distance: 150 }; // a curve with no track that is slower or nearer than this is no aircraft
+const FAST = 150; // m/s: and one faster than this is no aircraft low enough to be heard by its tones
+const CURVES = 3; // the most curves fitted in one second
+const JUMP = 0.2; // bins a traced tone may jump, on average, from where its neighbours put it
+const DENSE = 0.6; // share of the columns over its length in which a traced tone must be seen
+const ALONE_MS = 6000; // how long a single tone with no track must be heard for its curve to be fitted
 
 const dB = (power) => 10 * Math.log10(power + 1e-20);
 const round = (x) => (Number.isFinite(x) ? Math.round(x * 10) / 10 : null);
@@ -229,6 +277,80 @@ const chord = new Float32Array(LOOK);
 function quantile(values, n, q) {
   scratch.set(values.subarray(0, n));
   return scratch.subarray(0, n).sort()[Math.floor(q * (n - 1))];
+}
+
+// A tone in one column of `above` (clipped at zero): bin k stands STAND dB over the bins REACH + 1 to
+// REACH + 3 either side of `centre`. follow() asks it where a curve says a tone should be, and
+// sightings() of every bin. `centre` must be at least REACH + 3 bins from either end.
+function stands(col, k, centre) {
+  let beside = 0;
+  for (let j = REACH + 1; j <= REACH + 3; j++) beside += col[centre - j] + col[centre + j];
+  return col[k] - beside / 6 >= STAND;
+}
+// Every tone in one column, in fractional bins.
+export function sightings(col) {
+  const out = [];
+  for (let k = REACH + 3; k < BINS - REACH - 3; k++) {
+    if (!(col[k] >= col[k - 1] && col[k] > col[k + 1]) || !stands(col, k, k)) continue;
+    const den = col[k - 1] - 2 * col[k] + col[k + 1];
+    out.push(den < 0 ? k + (0.5 * (col[k - 1] - col[k + 1])) / den : k);
+  }
+  return out;
+}
+
+// Every tone seen in `cols` (the engine's columns, each with its `peaks`: sightings() of it), joined
+// from column to column where it moved smoothly, as follow() splits its sightings. Runs that moved BEND bins or more are then put together where they
+// moved in step, a constant number of bins apart, as the harmonics of one motor do. Returns those
+// groups, each a list of runs of { i, b } (column and fractional bin), the most sightings first.
+export function trace(cols) {
+  const open = [];
+  const runs = [];
+  for (let i = 0; i < cols.length; i++) {
+    // Each run takes the sighting nearest where it was heading, the nearest pairs first, so that a
+    // stray sighting beside a tone does not take its place. Sightings left over begin runs of their own.
+    const pairs = [];
+    for (const run of open) {
+      const last = run.pts.at(-1);
+      for (const b of cols[i].peaks) {
+        const off = Math.abs(b - last.b - run.slope * (i - last.i));
+        if (off <= 2) pairs.push({ run, b, off });
+      }
+    }
+    const taken = new Set();
+    for (const { run, b } of pairs.sort((x, y) => x.off - y.off)) {
+      if (run.at === i || taken.has(b)) continue;
+      const last = run.pts.at(-1);
+      run.slope = 0.7 * run.slope + (0.3 * (b - last.b)) / (i - last.i);
+      run.pts.push({ i, b });
+      run.at = i;
+      taken.add(b);
+    }
+    for (const b of cols[i].peaks) if (!taken.has(b)) open.push({ pts: [{ i, b }], slope: 0, at: i });
+    for (let k = open.length - 1; k >= 0; k--) if (i - open[k].pts.at(-1).i > 8) runs.push(...open.splice(k, 1));
+  }
+  // A tone moves smoothly from one sighting to the next, and is seen in most columns while it lasts.
+  // Peaks of a roar, joined up, jump about and leave gaps.
+  const smooth = (pts) => {
+    let jump = 0;
+    for (let k = 1; k + 1 < pts.length; k++) jump += Math.abs(pts[k].b - (pts[k - 1].b + pts[k + 1].b) / 2);
+    return jump / (pts.length - 2) <= JUMP && pts.length >= DENSE * (pts.at(-1).i - pts[0].i + 1);
+  };
+  const kept = [...runs, ...open].map((run) => run.pts).filter((pts) => pts.length >= RUN && Math.max(...pts.map((p) => p.b)) - Math.min(...pts.map((p) => p.b)) >= BEND && smooth(pts));
+  const group = kept.map((_, k) => k);
+  const root = (k) => (group[k] === k ? k : (group[k] = root(group[k])));
+  for (let a = 0; a < kept.length; a++) {
+    const at = new Map(kept[a].map((p) => [p.i, p.b]));
+    for (let b = a + 1; b < kept.length; b++) {
+      const gaps = kept[b].filter((p) => at.has(p.i)).map((p) => p.b - at.get(p.i));
+      if (gaps.length < RUN) continue;
+      const mean = gaps.reduce((sum, g) => sum + g, 0) / gaps.length;
+      if (Math.sqrt(gaps.reduce((sum, g) => sum + (g - mean) ** 2, 0) / gaps.length) <= FITS) group[root(b)] = root(a);
+    }
+  }
+  const groups = new Map();
+  kept.forEach((pts, k) => groups.set(root(k), [...(groups.get(root(k)) ?? []), pts]));
+  const size = (g) => g.reduce((sum, pts) => sum + pts.length, 0);
+  return [...groups.values()].sort((a, b) => size(b) - size(a));
 }
 
 // The note a set of tones are harmonics of, or null: the highest one that takes in nearly all of the
@@ -313,7 +435,7 @@ export function createEar({ sampleRate }) {
     still = []; // a column every 2 s for 4 min: each bin's usual level is the median of these
     rises = []; // { at, rise, hum } once a second for 10 min
     event = null; // the stretch of noise going on now: { from, peak, at, known, seen, pick, run }
-    state = { at: null, ready: false, signal: !off, level: null, background: null, rise: 0, noise: false, expected: [], heard: [] };
+    state = { at: null, ready: false, signal: !off, level: null, background: null, rise: 0, noise: false, expected: [], heard: [], tried: [], curves: [] };
   }
   forget();
 
@@ -321,6 +443,7 @@ export function createEar({ sampleRate }) {
   const planes = new Map(); // hex -> { hex, category, seen, s: [{ emit, heard, db, factor }] }
   const passes = new Map(); // hex -> { from, to, doppler, tones, fundamental } while it is predicted loud
   let done = [];
+  let fits = new Map(); // curve -> its fit, for the last second's curves
   let trim = {};
   let floor = null;
 
@@ -378,7 +501,8 @@ export function createEar({ sampleRate }) {
     const col = { at, db, above: db.map((v, b) => v - quiet[b]) };
     // The tone detector's own copy keeps only what is above the usual level. A bin that falls below it
     // (a hum that had become usual, then stopped) is no tone anywhere, and must not cancel one.
-    cols.push({ at, above: col.above.map((v) => Math.max(v, 0)) });
+    const above = col.above.map((v) => Math.max(v, 0));
+    cols.push({ at, above, peaks: sightings(above) });
     if (cols.length > LOOK) cols.shift();
 
     let loud = 0;
@@ -433,9 +557,7 @@ export function createEar({ sampleRate }) {
       const col = cols[i].above;
       let k = centre - REACH;
       for (let j = k + 1; j <= centre + REACH; j++) if (col[j] > col[k]) k = j;
-      let beside = 0;
-      for (let j = REACH + 1; j <= REACH + 3; j++) beside += col[centre - j] + col[centre + j];
-      if (col[k] - beside / 6 < STAND) continue;
+      if (!stands(col, k, centre)) continue;
       seenIn[n] = i;
       seenAt[n++] = k;
     }
@@ -623,6 +745,76 @@ export function createEar({ sampleRate }) {
     });
   }
 
+  // Where a track's pitch falls through the pitch it emits, which is its closest approach as heard,
+  // nearest to `ms` and no more than `reach` ms from it: { at, distance, speed }, or null.
+  function crossing(plane, ms, reach) {
+    const s = plane.s;
+    let best = null;
+    for (let i = 0; i + 1 < s.length; i++) {
+      const a = s[i];
+      const b = s[i + 1];
+      if (!(a.factor >= 1 && b.factor < 1) || b.emit - a.emit > 6000) continue;
+      const u = (a.factor - 1) / (a.factor - b.factor);
+      const at = a.heard + (b.heard - a.heard) * u;
+      if (Math.abs(at - ms) > reach || (best && Math.abs(at - ms) >= Math.abs(best.at - ms))) continue;
+      best = { at, distance: a.r + (b.r - a.r) * u, speed: a.v + (b.v - a.v) * u };
+    }
+    return best;
+  }
+
+  // The curves heard in the last 30 s, fitted as straight flybys (doppler.js). Each is tried against
+  // every candidate whose own pitch falls through its emitted pitch within SLIDE s of the curve,
+  // with that track's speed: it is that aircraft's if the fitted closest approach is within SLIDE s
+  // of the track's and the fitted distance within AWAY times, and that is true of no other. One that is no candidate's is fitted
+  // with its speed free, and kept if it is aircraft-like (ROAD) while noise is going on.
+  function curves(cands) {
+    const out = [];
+    const known = fits;
+    fits = new Map();
+    // A curve that has not changed since the last second is not fitted again: the same tones, seen at
+    // the same moments and pitches, fitted with the same speed.
+    const fitted = (points, speed) => {
+      const key = `${speed} ${points.map((p) => `${p.at},${p.hz},${p.tone}`).join(' ')}`;
+      if (!fits.has(key)) fits.set(key, known.has(key) ? known.get(key) : fitFlyby(points, { speed }));
+      return fits.get(key);
+    };
+    for (const runs of trace(cols).slice(0, CURVES)) {
+      const points = runs.flatMap((pts, tone) => pts.map(({ i, b }) => ({ at: cols[i].at, hz: FMIN * 2 ** (b / BPO), tone })));
+      const from = Math.min(...points.map((p) => p.at));
+      const to = Math.max(...points.map((p) => p.at));
+      const tried = [];
+      const fit = []; // the candidates it fits
+      let found = null;
+      // Only a curve heard through its closest approach says where that was. Either flat end alone fits
+      // a nearer or a further pass just as well.
+      const bent = (f) => f.at >= from && f.at <= to;
+      for (const { plane } of cands) {
+        const pass = crossing(plane, (from + to) / 2, (to - from) / 2 + SLIDE * 1000);
+        if (!pass) continue;
+        const f = fitted(points, Math.round(pass.speed * 10) / 10);
+        const offset = f && round((f.at - pass.at) / 1000);
+        const far = f && (f.distance > AWAY * pass.distance || f.distance * AWAY < pass.distance);
+        const why = !f || f.miss > FITS ? 'shape' : !bent(f) ? 'partial' : Math.abs(offset) > SLIDE ? 'time' : far ? 'distance' : null;
+        tried.push({ hex: plane.hex, why, offset: why === 'shape' || why === 'partial' ? null : offset });
+        if (!why) fit.push({ hex: plane.hex, offset, until: null, ...f });
+      }
+      // It is an aircraft's only when it is no other's: two that fit are told apart by nothing here.
+      if (fit.length === 1) found = fit[0];
+      else for (const t of tried) if (!t.why) t.why = 'ambiguous';
+      // With no track it has to be more than one tone, or one heard for a while: the shape of one short
+      // tone fits too many things.
+      if (!found && event && (runs.length > 1 || to - from >= ALONE_MS)) {
+        const f = fitted(points, null);
+        if (f && f.miss <= FITS && bent(f) && f.speed >= ROAD.speed && f.speed <= FAST && f.distance >= ROAD.distance) found = { hex: null, offset: null, until: Math.round(after(event.from, f)), ...f };
+      }
+      if (!found && !tried.length) continue;
+      // Two runs of one harmonic are one tone.
+      const hz = (found?.hz ?? []).toSorted((a, b) => a - b).filter((f, k, all) => !k || f > all[k - 1] * 1.02);
+      out.push({ from, to, ...(found ?? { hex: null, at: null }), ...(found && { hz }), kind: kind(hz, round(fundamental(hz.map((f) => ({ hz: f, z: 1 }))))), tried });
+    }
+    return out;
+  }
+
   function file(observation) {
     done.push(observation);
     if (done.length > WAITING) done.shift();
@@ -687,6 +879,11 @@ export function createEar({ sampleRate }) {
     // steady rate, which follow() looks for in the columns themselves.
     const heard = [];
     const expected = cands.map((c) => ({ hex: c.plane.hex, level: round(c.level), swing: null }));
+    // Why each candidate's tones were not found, for the panel: 'short' (too little of its track in
+    // the last 30 s), 'tone' (nothing piled up along its curve), 'steady' (what did is as strong held
+    // still), 'rival' (as strong along another aircraft's curve, or off the spectrogram there),
+    // 'drift' (as strong along a steady drift), 'weak' (too little of it); null when they were.
+    const tried = [];
     if (cands.length && cols.length >= 80) {
       // shortcut: only the 6 loudest candidates are tried; raise it if a busy sky needs more.
       const views = [null, ...cands.slice(0, 6)].map((c) => {
@@ -695,8 +892,13 @@ export function createEar({ sampleRate }) {
       });
       views.slice(1).forEach((view, i) => {
         const known = view.shift.filter((d) => d === d);
+        const reason = { hex: view.c.plane.hex, why: 'short' };
+        tried.push(reason);
         if (known.length < 80) return;
         expected[i].swing = round((2 ** ((Math.max(...known) - Math.min(...known)) / BPO) - 1) * 100);
+        const stage = ['tone', 'steady', 'rival', 'drift', 'weak'];
+        const reached = (why) => stage.indexOf(why) > stage.indexOf(reason.why) && (reason.why = why);
+        reason.why = 'tone';
         // Where this candidate's bin `b` would land in each other view: between b + lo and b + hi.
         const spans = views
           .filter((other) => other !== view)
@@ -707,13 +909,14 @@ export function createEar({ sampleRate }) {
               const d = view.shift[k] - other.shift[k];
               if (d === d) (lo = Math.min(lo, d)), (hi = Math.max(hi, d));
             }
-            return { mean: other.mean, lo, hi };
+            return { mean: other.mean, still: !other.c, lo, hi };
           });
         const tones = [];
         for (let b = 1; b < BINS - 1; b++) {
           const z = view.z[b];
           if (z < PEAK || z < view.z[b - 1] || z <= view.z[b + 1]) continue;
           let rival = -Infinity;
+          let still = false; // whether the strongest other explanation is "nothing is moving"
           let blind = false; // where it would land under another explanation runs off the spectrogram
           for (const s of spans) {
             const lo = Math.round(b + s.lo) - 1;
@@ -721,20 +924,28 @@ export function createEar({ sampleRate }) {
             if (lo < 0 || hi >= BINS) blind = true;
             else
               for (let k = lo; k <= hi; k++) {
-                if (s.mean[k] > rival) rival = s.mean[k];
+                if (s.mean[k] > rival) (rival = s.mean[k]), (still = s.still);
                 else if (s.mean[k] !== s.mean[k]) blind = true; // too few columns reached this bin to say
               }
           }
-          if (blind || !(Math.min(z, view.mean[b] - rival) >= Math.max(CLAIM, z / 3))) continue;
+          if (blind || !(Math.min(z, view.mean[b] - rival) >= Math.max(CLAIM, z / 3))) {
+            reached(still && !blind ? 'steady' : 'rival');
+            continue;
+          }
           // The same bar again with a steady drift among the rivals. Short of it, the peak is not this
           // aircraft's tone: it is left out of its tones, and a small margin is not added to the rest.
           const margin = Math.min(z, view.mean[b] - Math.max(rival, follow(view.shift, b)));
-          if (!(margin >= Math.max(CLAIM, z / 3))) continue;
+          if (!(margin >= Math.max(CLAIM, z / 3))) {
+            reached('drift');
+            continue;
+          }
           const bin = b + (0.5 * (view.z[b - 1] - view.z[b + 1])) / (view.z[b - 1] - 2 * z + view.z[b + 1]);
           tones.push({ hz: FMIN * 2 ** (bin / BPO), z, margin });
         }
         const confidence = 1 - Math.exp(-tones.reduce((sum, t) => sum + t.margin, 0) / 10);
+        if (tones.length) reached('weak');
         if (confidence < TRUST.tones) return;
+        reason.why = null;
         const found = { tones: tones.map((t) => round(t.hz)), fundamental: round(fundamental(tones)) };
         heard.push({ hex: view.c.plane.hex, how: 'doppler', confidence: Math.round(confidence * 100) / 100, candidates: [], ...found });
         if (confidence > view.c.pass.doppler) Object.assign(view.c.pass, { doppler: confidence, ...found });
@@ -770,7 +981,9 @@ export function createEar({ sampleRate }) {
         event = null;
       }
     }
-    state = { at, ready, signal: true, level: round(dB(now)), background: round(dB(usual)), rise: round(rise) ?? 0, noise: !!event, expected, heard };
+    // Curves are fitted only while there is something to fit them to: a candidate, or noise.
+    const fitted = cols.length >= 80 && (cands.length || event) ? curves(cands) : [];
+    state = { at, ready, signal: true, level: round(dB(now)), background: round(dB(usual)), rise: round(rise) ?? 0, noise: !!event, expected, heard, tried, curves: fitted };
   }
 
   return {
@@ -823,7 +1036,10 @@ export function createEar({ sampleRate }) {
           // Heard pitch over emitted pitch: how much aircraft time goes by per second of listening.
           // Near the speed of sound it runs away, and is left unknown.
           const factor = (b.t - a.t) / (b.heardAt - a.heardAt);
-          s.push({ emit: at + p.t * 1000, heard, db: p.db - (inEffect[w.category] ?? 0), factor: factor > 0.25 && factor < 4 ? factor : NaN });
+          // How far away it is and how fast it is going, for the curves.
+          const r = p.dist ?? Math.hypot(p.x, p.y, p.alt);
+          const v = Math.hypot(b.x - a.x, b.y - a.y, b.alt - a.alt) / (b.t - a.t || 1);
+          s.push({ emit: at + p.t * 1000, heard, db: p.db - (inEffect[w.category] ?? 0), factor: factor > 0.25 && factor < 4 ? factor : NaN, r, v });
         }
         plane.seen = at;
       }

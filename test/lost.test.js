@@ -12,13 +12,14 @@ const runways = [{ airport: 'TEST', ends: [{ id: '09', lat: 34, lon: lon(-5000) 
 
 // The page's side of a poll, as app.js does it: the feed's rows `s` seconds in go through follow(),
 // and the windows get their start and end in epoch ms. `s` relative to T0 keeps the numbers readable.
+// `age` is how old the answer is (seconds), as app.js passes it: already in each row's `seen_pos`.
 function watch(env = 'outdoors') {
   const known = new Map();
   return {
     known,
-    poll(s, rows) {
+    poll(s, rows, age = 0) {
       const now = T0 + s * 1000;
-      const { tracks, windows } = follow(known, rows, now, site, () => ({ ...ENVIRONMENTS[env], runways }));
+      const { tracks, windows } = follow(known, rows, now, site, () => ({ ...ENVIRONMENTS[env], runways }), age);
       const sec = (ms) => (ms - T0) / 1000;
       return { now, tracks, windows: windows.map((w) => ({ ...w, start: now + w.startS * 1000, end: now + w.endS * 1000, from: sec(now + w.startS * 1000), to: sec(now + w.endS * 1000) })) };
     },
@@ -27,7 +28,8 @@ function watch(env = 'outdoors') {
 const state = ({ windows, now }) => status(windows, now, now).state;
 
 // A heavy jet 7 km short of the threshold of runway 27 at 140 kt, which takes it over the site on the
-// way down. It touches down 7.3 km on, 101 s later, 2.3 km from the site and still audible there.
+// way down. It touches down 7.3 km on, 101 s later, 2.3 km from the site and still audible there, and
+// rolls out away from the site.
 const final27 = { hex: 'f1a127', flight: 'TST27  ', category: 'A5', lat: 34, lon: lon(5000), alt_baro: 1300, gs: 140, track: 270, baro_rate: -700, seen_pos: 0 };
 const TOUCHDOWN = 7300 / (140 * 0.5144);
 // An airliner 10 nm due south at 3000 ft, flying north at 250 kt: overhead in about 144 s.
@@ -35,12 +37,12 @@ const inbound = { hex: 'abc123', flight: 'TEST1  ', category: 'A3', lat: 34 - 10
 const at = (ac, s) => ({ ...ac, lat: ac.lat + (ac.gs * 0.5144 * s) / 111195 }); // `inbound`, s seconds on
 const heli = { hex: 'def456', category: 'A7', lat: 34, lon: -118, alt_baro: 800, gs: 0, seen_pos: 0 };
 
-test('an aircraft lost on final keeps its window to touchdown and no longer', () => {
+test('an aircraft lost on final keeps its window through its rollout and no longer', () => {
   const page = watch();
   const first = page.poll(0, [final27]);
   assert.equal(`${first.windows[0].phase} ${first.windows[0].runway}`, 'landing on 27');
   const end = first.windows[0].to;
-  assert.ok(end > TOUCHDOWN && end < TOUCHDOWN + 8, `audible until the sound of touchdown arrives, about ${Math.round(TOUCHDOWN + 7)} s in: got ${end}`);
+  assert.ok(end > TOUCHDOWN + 8 && end < TOUCHDOWN + 30, `audible for a few seconds after the sound of touchdown arrives, about ${Math.round(TOUCHDOWN + 7)} s in: got ${end}`);
   assert.equal(first.tracks[0].lost, undefined);
 
   // The feed never reports it again. Every poll still has it, once, with the same end.
@@ -52,12 +54,12 @@ test('an aircraft lost on final keeps its window to touchdown and no longer', ()
     assert.equal(w.phase, 'landing on');
     assert.equal(w.seenAt, T0);
     assert.equal(got.tracks[0].seenAt, T0);
-    // It is an estimate from 20 s without a position, on the track and on the window alike.
-    assert.deepEqual([w.lost, got.tracks[0].lost], s > LOST_S ? [true, true] : [undefined, undefined], `${s} s in`);
+    // It is an estimate from the first answer that leaves it out, on the track and on the window alike.
+    assert.deepEqual([w.lost, got.tracks[0].lost], [true, true], `${s} s in`);
     if (s > w.from) assert.equal(state(got), 'hold');
   }
 
-  // After touchdown it is gone: no window running on, no track, and nothing kept to bring it back.
+  // After its rollout it is gone: no window running on, no track, and nothing kept to bring it back.
   const after = page.poll(Math.ceil(end / 5) * 5 + 5, []);
   assert.deepEqual([after.tracks, after.windows, state(after)], [[], [], 'clear']);
   assert.equal(page.known.size, 0);
@@ -192,13 +194,100 @@ test('an aircraft the feed still lists is lost once its position is 20 s old', (
   assert.deepEqual([old.tracks[0].lost, old.windows[0].lost, old.windows[0].seenAt], [true, true, T0 - 25_000]);
 });
 
-test('a takeoff under way is carried on, and one that was only a guess is not', () => {
+test('a takeoff under way is carried on, and one lined up and lost cannot be told', () => {
   const jet = { hex: 'aaa111', category: 'A3', alt_baro: 'ground', lat: 34, seen_pos: 0 };
+  const waiting = { ...jet, hex: 'wa1t', lon: lon(-5000), gs: 0 };
   const page = watch();
-  const seen = page.poll(0, [{ ...jet, hex: 'r011', lon: lon(-4500), gs: 60, track: 90 }, { ...jet, hex: 'wa1t', lon: lon(-5000), gs: 0 }]);
+  const seen = page.poll(0, [{ ...jet, hex: 'r011', lon: lon(-4500), gs: 60, track: 90 }, waiting]);
   assert.deepEqual(seen.windows.map((w) => w.phase).sort(), ['lined up on', 'taking off from']);
   const got = page.poll(5, []);
-  assert.deepEqual(got.windows.map((w) => [w.hex, w.phase]), [['r011', 'taking off from']]);
+  assert.deepEqual(got.windows.map((w) => [w.hex, w.phase, !!w.unsure]), [['r011', 'taking off from', false], ['wa1t', 'lined up on', true]]);
   assert.deepEqual(got.tracks.map((w) => w.hex), ['r011'], 'no takeoff is made up for an aircraft that was waiting and is gone');
   assert.ok(Math.abs(got.windows[0].from - seen.windows.find((w) => w.hex === 'r011').from) <= 2);
+
+  // On its own: it can go at any moment, so the page cannot tell. Never a hold, never clear, no countdown.
+  const lone = watch();
+  lone.poll(0, [waiting]);
+  for (let s = 5; s < CAP_S; s += 5) {
+    const now = lone.poll(s, []);
+    const told = status(now.windows, now.now, now.now);
+    assert.deepEqual([told.state, told.unsure?.hex, told.until, now.tracks], ['soon', 'wa1t', null, []], `${s} s in`);
+    assert.deepEqual([now.windows[0].end, now.windows[0].path], [T0 + CAP_S * 1000, []], 'until its position is two minutes old');
+  }
+  // Then it is dropped, as any estimate is: by then it has gone, or the feed has it again.
+  assert.deepEqual([lone.poll(CAP_S, []).windows, lone.known.size], [[], 0]);
+  // Lost from a row the feed still lists, its position too old to use, the same.
+  const listed = watch();
+  listed.poll(0, [waiting]);
+  assert.equal(listed.poll(65, [{ ...waiting, seen_pos: 65 }]).windows[0].unsure, true);
+  // And once the position the feed still lists is lost (20 s old), though not yet too old to use: never
+  // clear, whether or not the row was missing in between.
+  const cannotTell = (got) => [state(got), got.windows.map((w) => [w.hex, w.phase, !!w.unsure, w.lost]), got.tracks];
+  for (const gap of [[], [5]]) {
+    const kept = watch();
+    kept.poll(0, [waiting]);
+    for (const s of gap) assert.deepEqual(cannotTell(kept.poll(s, [])), ['soon', [['wa1t', 'lined up on', true, undefined]], []]);
+    assert.equal(state(kept.poll(15, [{ ...waiting, seen_pos: 15 }])), 'clear', 'not lost yet: its guessed takeoff is over a minute away');
+    for (const s of [25, 40, 60]) {
+      const got = kept.poll(s, [{ ...waiting, seen_pos: s }]);
+      assert.deepEqual(cannotTell(got), ['soon', [['wa1t', 'lined up on', true, true]], []], `${s} s in`);
+      assert.deepEqual([got.windows[0].from, got.windows[0].to], [s, CAP_S]);
+    }
+    assert.deepEqual(cannotTell(kept.poll(90, [])), ['soon', [['wa1t', 'lined up on', true, true]], []], 'and when the row goes');
+  }
+  // Seen again, it is a report like any other.
+  const back = listed.poll(70, [{ ...waiting, lon: lon(-4900), gs: 40, track: 90 }]);
+  assert.deepEqual(back.windows.map((w) => [w.phase, !!w.unsure]), [['taking off from', false]]);
+  assert.equal(status(back.windows, back.now, back.now).unsure, undefined);
+
+  // One whose takeoff would not be heard is forgotten, not kept as a doubt.
+  const far = watch('stage');
+  far.poll(0, [{ ...waiting, lon: lon(-2000), true_heading: 270 }]); // lined up on 27, taking off away from the site
+  assert.deepEqual([far.poll(5, []).windows, far.known.size], [[], 0]);
+});
+
+test('an answer kept a minute does not make an old position a report: lost is measured from the answer', () => {
+  // The server keeps a quiet sky's answer for up to a minute (cadence.js): its rows are that much older
+  // when the page reads them, and the page adds the answer's age to each.
+  const far = { ...inbound, lat: 34 - 25 / 60 }; // 25 nm out: nothing to hear yet
+  const held = (rel, age) => watch().poll(0, [{ ...far, seen_pos: rel + age }], age).tracks;
+  assert.equal(held(5, 50)[0].lost, undefined, 'fresh in an answer 50 s old');
+  assert.equal(held(LOST_S + 1, 0)[0].lost, true);
+  assert.equal(held(LOST_S + 1, 50)[0].lost, true, 'as old within its answer, however long the answer was kept');
+  assert.equal(held(55, 50).length, 1, 'still predicted from');
+  assert.equal(held(61, 50).length, 0, 'too old to predict from, within its answer');
+  assert.equal(held(61, 0).length, 0);
+});
+
+test('an aircraft dropped from the newest answer is lost at once, whatever the cadence', () => {
+  // A helicopter hovering beside the set, in one answer and not in the next, fetched a second after
+  // the first and read 10 s, 30 s or a minute later (a quiet answer is kept that long).
+  for (const gap of [10, 30, 60]) {
+    const page = watch();
+    assert.equal(page.poll(0, [heli]).tracks[0].lost, undefined);
+    const next = page.poll(gap, [], gap - 1);
+    assert.deepEqual([next.tracks[0]?.lost, next.windows[0]?.lost], [true, true], `${gap} s later`);
+    assert.equal(page.poll(gap + 5, [], gap + 4).windows[0]?.lost, true, `${gap + 5} s later`);
+  }
+});
+
+test('the rest of a rollout does not count as arriving again, so a later departure is warned of', () => {
+  // app.js's side: an aircraft counts as just landed for 3 min after it was last seen arriving, and on
+  // the ground then it is predicted to roll out, not to take off.
+  const known = new Map();
+  const arrivingAt = new Map();
+  const poll = (s, rows) => {
+    const now = T0 + s * 1000;
+    const opts = (ac) => ({ ...ENVIRONMENTS.outdoors, runways, landed: now - (arrivingAt.get(ac.hex) ?? 0) < 180_000 });
+    const { tracks, windows } = follow(known, rows, now, site, opts);
+    for (const use of tracks) if (use.phase === 'landing on' && !use.rollout) arrivingAt.set(use.hex, now); // as app.js
+    return { now, tracks, windows: windows.map((w) => ({ ...w, start: now + w.startS * 1000, end: now + w.endS * 1000 })) };
+  };
+  poll(0, [final27]); // on final
+  const rolling = poll(10, [{ ...final27, alt_baro: 'ground', lon: lon(-2300), gs: 110, true_heading: 270 }]); // rolling out
+  assert.deepEqual(rolling.tracks.map((t) => [t.phase, t.runway, t.rollout]), [['landing on', '27', true]]);
+  assert.equal(arrivingAt.get(final27.hex), T0, 'still counted from the approach');
+  // The same aircraft, 3 min after its approach, rolling east down 09: a takeoff, not another rollout.
+  const out = poll(185, [{ ...final27, alt_baro: 'ground', lon: lon(-4500), gs: 60, track: 90, true_heading: 90 }]);
+  assert.deepEqual([out.windows.map((w) => [w.phase, w.runway]), state(out)], [[['taking off from', '09']], 'hold']);
 });

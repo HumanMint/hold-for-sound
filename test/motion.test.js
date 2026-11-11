@@ -46,6 +46,68 @@ test('the history is short, bounded, and forgets aircraft that have gone', () =>
   assert.equal(history.size, 0);
 });
 
+test('reports on the ground are kept, for whether it is speeding up, and leave its flight alone', () => {
+  const history = new Map();
+  const at = (s, gs, more) => remember(history, [row(s * 5, 0, { hex: 'heli01', alt_baro: 'ground', gs, track: 90, ...more })], T0 + s * 1000);
+  at(0, 3);
+  assert.deepEqual(motion(history.get('heli01')), { gaining: false }, 'one report: nothing to compare, and no flight');
+  at(4, 14);
+  assert.deepEqual(motion(history.get('heli01')), { gaining: true });
+  at(8, 14);
+  assert.equal(motion(history.get('heli01')).gaining, false, 'as fast is not faster');
+  at(30, 20);
+  assert.equal(motion(history.get('heli01')).gaining, false, 'its report before was 22 s earlier');
+  // In the air, what it did on the ground plays no part in how it has been flying.
+  for (let s = 35; s <= 95; s += 5) remember(history, [row(s * 5, 0, { gs: 100, track: 90 })], T0 + s * 1000);
+  const m = motion(history.get('heli01'));
+  const air = new Map();
+  for (let s = 35; s <= 95; s += 5) remember(air, [row(s * 5, 0, { gs: 100, track: 90 })], T0 + s * 1000);
+  assert.deepEqual(m, motion(air.get('heli01')));
+});
+
+test('a slower speed reported with no new position ends `gaining`, and a speed too old to compare gives none', () => {
+  const history = new Map();
+  // `s` seconds in, a report whose position was made at `pos` s.
+  const at = (s, pos, gs) => remember(history, [row(pos * 5, 0, { alt_baro: 'ground', gs, track: 90, seen_pos: s - pos })], T0 + s * 1000);
+  at(0, 0, 13);
+  at(5, 5, 14);
+  assert.equal(motion(history.get('heli01')).gaining, true);
+  at(10, 5, 14); // the same answer again: nothing new
+  assert.equal(motion(history.get('heli01')).gaining, true);
+  at(15, 5, 12); // its position stuck, its speed falling
+  assert.equal(motion(history.get('heli01')).gaining, false);
+  at(20, 5, 15); // and rising again, 5 s after the speed before
+  assert.equal(motion(history.get('heli01')).gaining, true);
+  at(40, 5, 16); // 20 s after it: too long to say it is speeding up now
+  assert.equal(motion(history.get('heli01')).gaining, false);
+  assert.equal(history.get('heli01').length, 2, 'speeds are kept on the report, not as new positions');
+});
+
+test('a backtracking aircraft that slows with its position stuck is no takeoff', () => {
+  const lon = (metresEast) => -118 + metresEast / 92185;
+  const runways = [{ airport: 'TEST', ends: [{ id: '09', lat: 34, lon: lon(-5000) }, { id: '27', lat: 34, lon: lon(-2000) }] }];
+  const history = new Map();
+  const known = new Map();
+  // On 09's centreline, going east at 13 then 14 kt: a slow start of a roll. Then its position stops
+  // updating, and the speed it reports falls to 10 kt.
+  const polls = [[0, 0, 13], [5, 5, 14], [10, 5, 12], ...[15, 20, 25, 30, 35, 40, 45, 50].map((s) => [s, 5, 10])];
+  const got = polls.map(([s, pos, gs]) => {
+    const ac = { hex: 'back01', category: 'A3', alt_baro: 'ground', lat: 34, lon: lon(-4500 + pos * 7), gs, true_heading: 90, track: 90, seen_pos: s - pos };
+    const now = T0 + s * 1000;
+    remember(history, [ac], now);
+    const { tracks, windows } = follow(known, [ac], now, site, () => ({ ...ENVIRONMENTS.outdoors, runways, motion: motion(history.get(ac.hex)) }));
+    const told = status(windows.map((w) => ({ ...w, start: now + w.startS * 1000, end: now + w.endS * 1000 })), now, now);
+    return [windows[0]?.phase, told.state, !!told.unsure];
+  });
+  assert.deepEqual(got[1], ['taking off from', 'soon', false]);
+  // Slower: only lined up, as it was before it sped up, and no takeoff is made up from a speed it no
+  // longer has. Once its position is lost (20 s old) the page cannot tell. Never a hold.
+  assert.deepEqual(got.slice(2), [
+    ...Array(4).fill(['lined up on', 'soon', false]),
+    ...Array(5).fill(['lined up on', 'soon', true]),
+  ]);
+});
+
 test('a position no aircraft could have flown to starts its history again', () => {
   // A recording looping back: 5 s after its last report it is 8 km away.
   const history = new Map();

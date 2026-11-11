@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createShare, coarse, BANDS, LO, STEP, BEFORE_MS, AFTER_MS, AFTER_MARK_MS } from '../public/share-core.js';
+import { createShare, coarse, BANDS, LO, STEP, BEFORE_MS, AFTER_MS, AFTER_MARK_MS, NOISE_MS, AROUND_MS, NOISE_HOUR_MS } from '../public/share-core.js';
 import { createCore } from '../public/listen-core.js';
 import { createSynth } from '../public/synth.js';
 import { BINS, FREQS } from '../public/hear.js';
@@ -64,6 +64,8 @@ const second = (s, status = {}, more = {}) => ({
   columns: Array.from({ length: 8 }, (_, i) => START + s * 1000 - (7 - i) * 125).map((at) => ({ at, db: Float32Array.from({ length: BINS }, (_, b) => level(at, b)) })),
   ...more,
 });
+// The engine expecting an aircraft in a second.
+const expecting = { expected: [{ hex: 'aaa111', level: 50, swing: null }] };
 // Seconds `from` to `to`, with whatever `status(s)` says the engine found in each.
 function hear(r, from, to, status = () => ({}), more) {
   for (let s = from; s <= to; s++) {
@@ -225,9 +227,9 @@ test('a batch is what the server stores: the set by its coordinates, each poll w
   assert.deepEqual(Object.keys(w), ['hex', 'flight', 't', 'cat', 'start', 'end', 'peak', 'dist', 'alt', 'seen']);
   assert.deepEqual([w.hex, w.flight, w.t, w.cat, w.seen], ['aaa111', 'AAA111', 'B738', 'A3', 0]);
   assert.ok(w.start > first.at && w.end > w.start && w.peak > 60 && w.dist > 900 && w.alt > 2900);
-  // Once the feed has lost it the window is marked as the estimate it is, and then as "cannot tell".
+  // From the first answer that leaves it out the window is marked as the estimate it is, and then as "cannot tell".
   const lost = polls.find((p) => p.windows.some((x) => x.lost));
-  assert.ok(lost && lost.windows[0].seen > 20 && polls.indexOf(lost) >= 9);
+  assert.deepEqual([polls.indexOf(lost), lost.windows[0].seen], [6, 5]);
   assert.ok(polls.every((p) => p.windows.every((x) => !('path' in x))));
   assert.deepEqual(stored.filter((e) => e.k === 'mark').map((e) => [e.at - START, e.heard]), [[20_000, true], [45_000, false]]);
   assert.deepEqual(stored.at(-1), { k: 'tune', at: r.now, floor: 57, trim: { A3: -2 } });
@@ -386,7 +388,7 @@ test('a server that has no more room stops the sharing quietly', async () => {
   assert.equal(r.posts.length, sent);
 });
 
-test('the spectrogram is kept from 30 s before something is first expected or heard until 30 s after the last of it', async () => {
+test('the spectrogram is kept from 30 s before an aircraft is first expected or heard until 30 s after the last of it', async () => {
   const r = rig();
   r.share.start();
   // Four minutes with nothing predicted and nothing heard: remembered for 30 s, and none of it sent.
@@ -394,8 +396,8 @@ test('the spectrogram is kept from 30 s before something is first expected or he
   await r.share.flush();
   assert.deepEqual(r.kinds().filter((k) => k !== 'mic'), ['listen']);
 
-  // Then the engine hears noise from 4:01 to 4:20, and nothing more for three minutes.
-  hear(r, 241, 260, () => ({ noise: true, rise: 9 }));
+  // Then the engine expects an aircraft from 4:01 to 4:20, and nothing more for three minutes.
+  hear(r, 241, 260, () => ({ ...expecting, noise: true, rise: 9 }));
   hear(r, 261, 440);
   await r.share.flush();
   sound(r);
@@ -408,7 +410,7 @@ test('the spectrogram is kept from 30 s before something is first expected or he
   assert.ok(specs.length >= 7 && specs.every((text) => JSON.parse(text).events.length === 1));
   assert.ok(r.events().every((e) => e.k !== 'spec' || e.cols <= 80) && r.posts.every((text) => text.length < MAX_POST * 0.6));
   // Whenever it sends, everything else goes first: the one batch a closing page gets out is not the spectrogram.
-  hear(r, 441, 460, () => ({ noise: true }));
+  hear(r, 441, 460, () => expecting);
   r.share.mark(true);
   const before = r.posts.length;
   await r.share.flush();
@@ -421,11 +423,12 @@ test('the spectrogram is kept from 30 s before something is first expected or he
   assert.ok(Array.from(FREQS).every((hz, b) => Math.abs(hz - head.fmin * 2 ** (b / head.octave)) < hz * 1e-6));
 
   // Each of the four things that start one does so alone: the engine expecting an aircraft, naming
-  // one, hearing noise, and the page predicting one audible (an estimate and a "cannot tell" too).
+  // one, hearing noise that one of them could be, and the page predicting one audible (an estimate
+  // and a "cannot tell" too).
   const starts = [
     (s) => ({ expected: s === 100 ? [{ hex: 'aaa111', level: 48, swing: null }] : [] }),
     (s) => ({ heard: s === 100 ? [{ hex: 'aaa111', how: 'doppler', confidence: 0.6, candidates: [], tones: [80], fundamental: 80 }] : [] }),
-    (s) => ({ noise: s === 100 }),
+    (s) => ({ noise: s === 100, heard: s === 100 ? [{ hex: null, how: 'level', confidence: 0, candidates: ['aaa111'], tones: [], fundamental: null }] : [] }),
   ];
   const windows = [{}, { lost: true }, { unsure: true, path: [] }].map((more) => ({ windows: [{ hex: 'aaa111', category: 'A3', start: START + 99_500, end: START + 100_500, peakDb: 70, seenAt: START, ...more }] }));
   for (const [status, page] of [...starts.map((status) => [status, {}]), ...windows.map((page) => [() => ({}), page])]) {
@@ -442,8 +445,8 @@ test('the spectrogram is kept from 30 s before something is first expected or he
 test('stretches that touch or overlap are one, with no column sent twice, and a later one is its own', async () => {
   const r = rig();
   r.share.start();
-  const noise = (...at) => (s) => ({ noise: at.some(([from, to]) => s >= from && s <= to) });
-  // Noise at 1:40, again 50 s after it stopped (the 30 s after one and before the next overlap), then
+  const noise = (...at) => (s) => (at.some(([from, to]) => s >= from && s <= to) ? expecting : {});
+  // An aircraft at 1:40, another 50 s after it (the 30 s after one and before the next overlap), then
   // exactly a minute after that (they touch), then five minutes later.
   hear(r, 1, 800, noise([100, 110], [160, 165], [225, 230], [530, 540]));
   await r.share.flush();
@@ -457,14 +460,105 @@ test('stretches that touch or overlap are one, with no column sent twice, and a 
   // of is two: the columns either side of the gap do not follow one another.
   const gap = rig();
   gap.share.start();
-  hear(gap, 1, 60, () => ({ noise: true }));
-  hear(gap, 65, 120, () => ({ noise: true }));
+  hear(gap, 1, 60, () => expecting);
+  hear(gap, 65, 120, () => expecting);
   await gap.share.flush();
   sound(gap);
   assert.deepEqual(stretches(gap), [
     [0.125, 0.125, 60, 60 * 8],
     [64.125, 64.125, 120, 56 * 8],
   ]);
+});
+
+test('noise that no aircraft explains is kept only once it has lasted 20 s, and only 10 s either side of it', async () => {
+  assert.deepEqual([NOISE_MS, AROUND_MS], [20_000, 10_000]);
+  const r = rig();
+  r.share.start();
+  const noise = (...at) => (s) => ({ noise: at.some(([from, to]) => s >= from && s <= to) });
+  // 16 s of it, then 20 s, then 41 s, then 30 s with the microphone stopped for 5 s in the middle:
+  // none of it explained by any aircraft (the engine's `heard` names none and lists none it could be).
+  const unexplained = (s) => ({ ...noise([100, 115], [200, 219], [300, 340], [500, 514], [520, 534])(s), heard: [] });
+  hear(r, 1, 499, unexplained);
+  hear(r, 500, 514, unexplained);
+  hear(r, 520, 600, unexplained);
+  await r.share.flush();
+  sound(r);
+  assert.deepEqual(stretches(r), [
+    [189, 189, 229, 40 * 8 + 1], // the noise heard in the seconds that ended at 3:20 to 3:39 began at 3:19
+    [289, 289, 350, 61 * 8 + 1],
+  ]);
+
+  // Noise while an aircraft is expected is the aircraft's: 30 s either side, from its first second.
+  const plane = rig();
+  plane.share.start();
+  hear(plane, 1, 200, (s) => ({ noise: s >= 100 && s <= 105, ...(s >= 100 && s <= 105 ? expecting : {}) }));
+  await plane.share.flush();
+  assert.deepEqual(stretches(plane), [[70, 70, 135, 65 * 8 + 1]]);
+});
+
+test('noise that no aircraft explains is kept for 15 min an hour at most', async () => {
+  assert.equal(NOISE_HOUR_MS, 15 * 60_000);
+  const r = rig();
+  r.share.start();
+  // An hour and a half of it without a break (a generator beside the set), and an aircraft in the middle.
+  for (let s = 1; s <= 5400; s += 600) {
+    hear(r, s, s + 599, (t) => ({ noise: true, ...(t >= 2000 && t <= 2010 ? expecting : {}) }));
+    await r.share.flush();
+  }
+  sound(r);
+  assert.deepEqual(stretches(r), [
+    [0.125, 0.125, 900, 7200],
+    [1970, 1970, 2040, 70 * 8 + 1], // the aircraft's, which the allowance does not count
+    [3600.125, 3600.125, 4500, 7200],
+  ]);
+  // In no hour more than 15 min of it.
+  const noise = r.columns().filter((c) => c.at < START + 1970_000 || c.at > START + 2040_000).map((c) => c.at);
+  for (const [i, at] of noise.entries()) assert.ok(noise.filter((t) => t > at - 3600_000 && t <= at).length <= 7200, `${i}`);
+});
+
+test('a server with no more room for spectrogram stops it, and the rest goes on', async () => {
+  // The server's side: log.js answers `spec: false` once a session is too near its size (here 40 KB,
+  // which the made-up columns, that compress well, reach in about 8 minutes).
+  const dir = mkdtempSync(join(tmpdir(), 'hfs-share-'));
+  const log = createLog(dir, { sessionMax: 200_000, specMax: 40_000, clock: () => START });
+  const answers = [];
+  let trimmed = 0;
+  const r = rig({ answer: (text) => (answers.push(log.request('POST', text)), answers.at(-1)), trimmed: () => trimmed++ });
+  r.share.update(update(r.now, []));
+  r.share.start();
+  // An aircraft never out of earshot for 10 minutes, a mark, then another 10 minutes.
+  for (let s = 1; s <= 600; s += 20) {
+    hear(r, s, s + 19, () => expecting);
+    await r.share.flush();
+  }
+  assert.equal(r.share.spec, false, 'the spectrogram stopped');
+  assert.equal(r.share.on, true, 'sharing did not');
+  assert.equal(trimmed, 1);
+  // The page heard it the first time, and sent no more; the server goes on saying so.
+  const stop = answers.findIndex((a) => a.spec === false);
+  assert.ok(stop >= 0 && answers.slice(stop).every((a) => a.spec === false));
+  assert.ok(r.posts.slice(stop + 1).every((text) => !text.includes('"k":"spec"')));
+  assert.ok(answers.every((a) => a.ok && !a.full));
+  const spec = readdirSync(dir).find((f) => f.endsWith('.spec.bin.gz'));
+  const kept = readFileSync(join(dir, spec)).length;
+  r.share.mark(true);
+  const posts = r.posts.length;
+  hear(r, 601, 1200, () => expecting);
+  await r.share.flush();
+  const later = r.posts.slice(posts).flatMap((text) => JSON.parse(text).events.map((e) => e.k));
+  assert.ok(!later.includes('spec') && later.includes('mark') && later.filter((k) => k === 'mic').length === 600, 'no more spectrogram is sent; the rest is');
+  assert.equal(readFileSync(join(dir, spec)).length, kept);
+  const stored = read(join(dir, readdirSync(dir).find((f) => f.endsWith('.log.jsonl.gz'))));
+  assert.equal(stored.filter((e) => e.k === 'mic').length, 1200, 'and stored, every second');
+  assert.ok(stored.some((e) => e.k === 'mark'));
+  // What the spectrogram was allowed, and not more; the rest went on past it.
+  const size = readdirSync(dir).reduce((sum, f) => sum + readFileSync(join(dir, f)).length, 0);
+  assert.ok(kept > 15_000 && size > 40_000 && size <= 200_000, `${size} bytes, ${kept} of them spectrogram`);
+
+  // A new session has its own room again.
+  r.share.stop();
+  r.share.start();
+  assert.equal(r.share.spec, true);
 });
 
 test('a mark keeps the 30 s before the tap and the minute after it', async () => {
@@ -553,12 +647,12 @@ test('a stretch is stored by the server and read back into dB by bin and time, r
   const levels = new Map();
   const any = (at, b) => (b === 0 ? -200 : b === 1 ? -140.2 : b === 2 ? 0 : b === 3 ? 3.7 : -120 + ((at * 7 + b * 13) % 1171) / 10);
   for (let s = 1; s <= 25; s++) {
-    const d = second(s, { noise: true });
+    const d = second(s, expecting);
     for (const col of d.columns) levels.set(col.at, (col.db = Float32Array.from({ length: BINS }, (_, b) => any(col.at, b))));
     r.share.heard(d);
   }
   await r.share.flush();
-  for (let s = 100; s <= 104; s++) r.share.heard(second(s, { noise: true })); // a second stretch, much later
+  for (let s = 100; s <= 104; s++) r.share.heard(second(s, expecting)); // a second stretch, much later
   await r.share.flush();
 
   const files = readdirSync(dir).sort();
@@ -591,7 +685,7 @@ test('with the network down the spectrogram is the first thing let go', async ()
   r.share.update(update(r.now, []));
   r.share.start();
   await r.share.flush();
-  hear(r, 1, 600, () => ({ noise: true }));
+  hear(r, 1, 600, () => expecting);
   r.share.mark(true);
   up = true;
   await r.share.flush();
@@ -643,10 +737,54 @@ test('nothing heard before the switch went on is sent, not even the rest of that
   assert.ok(mic.some((m) => m.level !== null));
 });
 
-test('the line under the switch says when the spectrogram is kept', () => {
+test('nothing measured before the switch went on is sent: not a pass, not what the engine made of it, not a record dated earlier', async () => {
+  const r = rig();
+  r.share.update(update(START, []));
+  const named = { noise: true, heard: [{ hex: 'aaa111', how: 'envelope', confidence: 0.4, candidates: [], tones: [] }] };
+  hear(r, 1, 60, () => named);
+  r.now = START + 60_500;
+  r.share.start();
+  const since = r.now;
+  // Passes as the engine files them: when the peak was due, and the first point of their curve (or how
+  // long the noise lasted). The engine looks back 30 s for what it hears.
+  const pass = (s, from) => ({ at: START + s * 1000, hex: 'aaa111', how: 'envelope', heard: true, confidence: 0.4, predPeak: 50, rise: 8, floor: null, onsetErr: 1, peakErr: 0, seconds: 30, tones: [], fundamental: null, curve: { from: START + from * 1000, step: 1000, pred: [40, 50], rise: [3, 8] } });
+  const noise = (s, seconds) => ({ at: START + s * 1000, hex: null, how: 'unexplained', heard: true, confidence: 0, rise: 6, seconds, predPeak: null, floor: null, onsetErr: null, peakErr: null, tones: [], fundamental: null, curve: null });
+  const filed = {
+    61: [pass(58, 37)], // peaked before the switch, with its rise from 23 s before it
+    100: [pass(97, 75)], // all after the switch, but what it heard at 75 s rests on the 30 s before
+    120: [pass(118, 95), noise(110, 45)], // the first is sent; the noise began 5 s after the switch
+    150: [noise(145, 20)], // began 125 s in
+  };
+  for (let s = 61; s <= 150; s++) {
+    r.now = START + s * 1000;
+    r.share.heard(second(s, named, { observations: filed[s] ?? [] }));
+  }
+  r.share.update(update(since - 1000, [])); // an update made before, arriving after
+  await r.share.flush();
+  const events = r.events();
+  assert.ok(events.every((e) => e.at >= since), events.filter((e) => e.at < since).map((e) => `${e.k} ${e.at - since}`).join(', '));
+  assert.equal(events.find((e) => e.k === 'site').at, since, 'the set, as it is when sharing begins');
+  assert.equal(events.filter((e) => e.k === 'poll').length, 0);
+  assert.deepEqual(events.filter((e) => e.k === 'pass').map((e) => [(e.at - START) / 1000, e.curve?.from ?? null]), [[118, START + 95_000], [145, null]]);
+  const mic = events.filter((e) => e.k === 'mic');
+  assert.equal(mic.length, 90);
+  assert.equal(mic[0].signal, null, 'the second the switch went on in');
+  assert.ok(mic.slice(1).every((m) => m.signal === true));
+  for (const m of mic) {
+    const early = m.at - 30_000 < since;
+    assert.equal(m.noise, early ? null : true, `${m.at - since}`);
+    assert.equal('heard' in m, !early, `${m.at - since}`);
+  }
+});
+
+test('the line under the switch, and the privacy notice, say when the spectrogram is kept', () => {
   const line = readFileSync(new URL('../public/share.js', import.meta.url), 'utf8').match(/<p id="shares">(.*?)<\/p>/)[1];
-  assert.equal([BEFORE_MS, AFTER_MS, AFTER_MARK_MS].join(), '30000,30000,60000', 'what the line says');
-  for (const words of ['30 s before to 30 s after each aircraft or aircraft-like noise', 'a minute after each mark', 'speech included']) assert.ok(line.includes(words), words);
+  const about = readFileSync(new URL('../public/about.html', import.meta.url), 'utf8');
+  assert.equal([BEFORE_MS, AFTER_MS, AFTER_MARK_MS, NOISE_MS, AROUND_MS, NOISE_HOUR_MS].join(), '30000,30000,60000,20000,10000,900000', 'what the line says');
+  const said = ['from 30 s before to 30 s after each predicted aircraft, and to a minute after each mark', 'from 10 s before to 10 s after other aircraft-like noise lasting 20 s or more, up to 15 min an hour', 'speech included'];
+  for (const words of said) assert.ok(line.includes(words), words);
+  for (const words of said) assert.ok(about.includes(words), `about.html: ${words}`);
+  assert.ok(!line.includes('aircraft or aircraft-like noise') && !about.includes('aircraft or aircraft-like noise'));
 });
 
 test('the log says what the banner said, held hold and all, not a reckoning of its own', async () => {

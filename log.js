@@ -8,7 +8,7 @@
 //                              page's records in the order it made them, with a `post` line from this
 //                              server before each batch (public/share-core.js lists the records)
 //   <day>-<id>.feed.jsonl.gz   the feed as that page was served it, one { at, ac } a line: what REPLAY reads
-//   <day>-<id>.spec.bin.gz     the listening engine's spectrogram around each aircraft and each mark.
+//   <day>-<id>.spec.bin.gz     the listening engine's spectrogram around each aircraft, long noise and mark.
 //                              Chunk after chunk, each a line of JSON (the `spec` record without its
 //                              `data`: it says how to read the bytes) and then cols × bins bytes, one
 //                              column after another. spectrogram() below reads it back into dB.
@@ -22,7 +22,11 @@
 // A public link may be in front of this. A name is built only from the day and an id that fits ID, a
 // post is MAX_POST at most, and a session and the directory each have a size they stop at
 // (SESSION_MAX, 30 hours of the above, and DIR_MAX, and 2000 sessions). At either, the page is told
-// `full` and stops sending.
+// `full` and stops sending. A batch is stored whole or not at all. The spectrogram stops sooner, an
+// eighth of the session short of its size (4 MB of the public 32): a post holding any is then answered
+// `spec: false` and only the rest of it is kept, so the page's cheaper records, about 0.3 MB an hour,
+// go on to the end. From then on every answer for that session, repeats and after a restart included,
+// says `spec: false`.
 //
 // A session's files are deleted once the day it began is KEEP_DAYS old: when the log is created, and
 // every day after.
@@ -115,7 +119,7 @@ export function body(req, max = MAX_POST) {
 //   log.frame(id, at, ac)        the feed just served to the page with this session id: `at` is when
 //                                the feed took the snapshot, epoch ms. Kept if the session is known.
 // A session begins with its first post, never with a feed request.
-export function createLog(dir, { sessionMax = SESSION_MAX, dirMax = DIR_MAX, maxSessions = 2000, keepDays = KEEP_DAYS, clock = Date.now } = {}) {
+export function createLog(dir, { sessionMax = SESSION_MAX, specMax = sessionMax - sessionMax / 8, dirMax = DIR_MAX, maxSessions = 2000, keepDays = KEEP_DAYS, clock = Date.now } = {}) {
   if (!dir) {
     return {
       on: false,
@@ -170,13 +174,16 @@ export function createLog(dir, { sessionMax = SESSION_MAX, dirMax = DIR_MAX, max
     return fits();
   }
 
-  // `content` is text, or bytes for the spectrogram.
-  function append(s, kind, content) {
+  // Whether `size` more bytes fit the session and the directory. Past the session's size it is full
+  // for good.
+  function fits(s, size) {
     if (dead || s.full) return false;
-    const data = gzipSync(content);
-    if (s.bytes + data.length > sessionMax) return !(s.full = true);
-    if (total + data.length > dirMax) again();
-    if (total + data.length > dirMax) return false;
+    if (s.bytes + size > sessionMax) return !(s.full = true);
+    if (total + size > dirMax) again();
+    return total + size <= dirMax;
+  }
+  // Gzipped `data` added to one of the session's files: false if it could not be.
+  function write(s, kind, data) {
     try {
       appendFileSync(join(dir, `${s.name}.${FILES[kind]}`), data);
     } catch (e) {
@@ -189,12 +196,14 @@ export function createLog(dir, { sessionMax = SESSION_MAX, dirMax = DIR_MAX, max
     return true;
   }
 
-  // The last batch a session stored, from its log: after a restart a batch sent again is still known.
+  // From its log, the last batch a session stored, so that after a restart a batch sent again is still
+  // known, and whether its spectrogram has stopped (`spec: false` on a `post` line).
   function stored(s) {
     try {
-      return read(join(dir, `${s.name}.${FILES.log}`)).findLast((line) => line.k === 'post')?.n ?? -1;
+      const posts = read(join(dir, `${s.name}.${FILES.log}`)).filter((line) => line.k === 'post');
+      return { n: posts.at(-1)?.n ?? -1, nospec: posts.some((line) => line.spec === false) };
     } catch {
-      return -1; // no log, or one that cannot be read: it is carried on from here
+      return { n: -1, nospec: false }; // no log, or one that cannot be read: it is carried on from here
     }
   }
 
@@ -214,8 +223,9 @@ export function createLog(dir, { sessionMax = SESSION_MAX, dirMax = DIR_MAX, max
     // A chunk of spectrogram is kept as bytes in a file of its own: that is a fifth smaller than the
     // same as text, and leaves the log something a person can read. Its line in the log, without the
     // bytes, says it was there.
-    const chunks = [];
-    const lines = [{ k: 'post', n, at: clock(), sent: Number.isFinite(sent) ? sent : null }];
+    let chunks = [];
+    const posted = { k: 'post', n, at: clock(), sent: Number.isFinite(sent) ? sent : null };
+    let lines = [posted];
     for (const event of events) {
       const { data, ...head } = event;
       lines.push(event.k === 'spec' ? head : event);
@@ -223,21 +233,36 @@ export function createLog(dir, { sessionMax = SESSION_MAX, dirMax = DIR_MAX, max
       const bytes = Buffer.from(typeof data === 'string' ? data : '', 'base64');
       const count = (v) => Number.isInteger(v) && v > 0;
       if (!count(head.cols) || !count(head.bins) || bytes.length !== head.cols * head.bins) return { status: 400, error: 'A spectrogram is cols × bins bytes.' };
-      chunks.push(Buffer.concat([Buffer.from(`${JSON.stringify(head)}\n`), bytes]));
+      chunks.push(gzipSync(Buffer.concat([Buffer.from(`${JSON.stringify(head)}\n`), bytes])));
     }
     let s = sessions.get(id);
     if (!s) {
       if (!room()) return { status: 200, full: true };
-      s = { name: `${new Date(clock()).toISOString().slice(0, 10)}-${id}`, bytes: 0, n: -1, lastAt: 0 };
+      s = { name: `${new Date(clock()).toISOString().slice(0, 10)}-${id}`, bytes: 0, n: -1, nospec: false, lastAt: 0 };
       lines.unshift({ k: 'session', v: 1, id, at: clock() });
     }
-    // A batch sent again, because its answer was lost on the way back, is not stored twice.
-    s.n ??= stored(s);
-    if (n <= s.n) return { status: 200, ok: true };
-    if (!append(s, 'log', `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`)) return { status: 200, full: true };
+    // A batch sent again, because its answer was lost on the way back, is not stored twice, and is
+    // answered as it was the first time.
+    if (s.n == null) Object.assign(s, stored(s));
+    const ok = () => (s.nospec ? { status: 200, ok: true, spec: false } : { status: 200, ok: true });
+    if (n <= s.n) return ok();
+    // No room left for spectrogram: the rest of the post is kept without it, and the page is told. Once
+    // stopped, a session's spectrogram stays stopped, and its log says so for after a restart.
+    const jsonl = (all) => `${all.map((line) => JSON.stringify(line)).join('\n')}\n`;
+    const spec = !chunks.length || (!s.nospec && s.bytes + gzipSync(jsonl(lines)).length + chunks.reduce((sum, c) => sum + c.length, 0) <= specMax);
+    if (!spec) {
+      [lines, chunks] = [lines.filter((line) => line.k !== 'spec'), []];
+      posted.spec = false;
+    }
+    // All of the batch is written, or none of it: it is acknowledged only once it is all there.
+    const log = gzipSync(jsonl(lines));
+    if (!fits(s, log.length + chunks.reduce((sum, c) => sum + c.length, 0))) return { status: 200, full: true };
+    if (!write(s, 'log', log)) return { status: 200, full: true };
     sessions.set(id, s);
+    if (!chunks.every((chunk) => write(s, 'spec', chunk))) return { status: 200, full: true };
     s.n = n;
-    return chunks.every((chunk) => append(s, 'spec', chunk)) ? { status: 200, ok: true } : { status: 200, full: true };
+    s.nospec ||= !spec;
+    return ok();
   }
 
   return {
@@ -252,7 +277,9 @@ export function createLog(dir, { sessionMax = SESSION_MAX, dirMax = DIR_MAX, max
       at = Math.round(at ?? clock());
       try {
         // The same snapshot is served to every poll within a few seconds: once is enough.
-        if (s && at > s.lastAt && append(s, 'feed', `${JSON.stringify({ at, ac: ac.map(thin) })}\n`)) s.lastAt = at;
+        if (!s || at <= s.lastAt) return;
+        const data = gzipSync(`${JSON.stringify({ at, ac: ac.map(thin) })}\n`);
+        if (fits(s, data.length) && write(s, 'feed', data)) s.lastAt = at;
       } catch {
         // A feed this cannot make sense of is the page's to deal with: keeping it must never cost the page its answer.
       }

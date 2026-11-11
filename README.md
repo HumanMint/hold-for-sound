@@ -32,6 +32,7 @@ All optional, as environment variables:
 - `LOG_DIR`: a folder for sessions that visitors choose to share; without it, sharing is not offered.
 - `ADSB_LOL_KEY`: an adsb.lol API key, sent to adsb.lol only.
 - `ADSB_LOL_DAY`: how many adsb.lol requests the server makes in a day before it pauses.
+- `ADSB_LOL_WEEK`: the same, over 7 days.
 - `ADSB_LOL_MONTH`: the same, over 30 days.
 - `RECEIVER`: the URL of an ADS-B receiver's `aircraft.json`, whose aircraft are added to the feed.
 - `PUBLIC_HOST`: public mode: the host name to answer to, behind a proxy such as Cloudflare, listening on loopback only and with tighter limits.
@@ -39,13 +40,17 @@ All optional, as environment variables:
 
 ## How it predicts
 
-Every 5 seconds it fetches the aircraft within 30 nautical miles and steps each one's path forward 8 minutes, estimating the loudness at the set from the aircraft's size, distance, height and the building's insulation. An aircraft is listed when that estimate rises above the warning level.
+Every 5 seconds the page asks for the aircraft within 30 nautical miles and steps each one's path forward 8 minutes, estimating the loudness at the set from the aircraft's size, distance, height and the building's insulation. An aircraft is listed when that estimate rises above the warning level.
 
-- On a runway: it accelerates, lifts off and climbs straight out.
-- On final approach: it follows the centreline down and goes quiet on touchdown.
+- On a runway, or on its centreline up to 200 m before its end: it accelerates, lifts off and climbs straight out. At 10 knots or more and speeding up, it is taken to be rolling.
+- Stopped at a holding point beside a runway end: treated like a taxiing aircraft, which may take off.
+- On final approach: it follows the centreline down, touches down and rolls out, quieter as it slows.
+- After landing, still fast on the runway: the rest of its rollout.
 - A helicopter: judged by its last minute of flight, with a widening spread of headings.
 - Anything else: it keeps its speed, heading and climb.
-- An aircraft the feed loses is carried on from its last position for up to 2 minutes, shown as an estimate.
+- An aircraft the feed loses is carried on from its last position for up to 2 minutes, shown as an estimate. One lost while lined up on a runway, whether the feed drops it or goes on listing an old position, can go at any moment: for those 2 minutes the page says it cannot tell, never Clear.
+
+In public mode the server asks the flight feed for a place every 10 seconds while an aircraft may matter soon (one that could come within about 10 km, or that is moving on the ground nearby), and once a minute while the sky is quiet, or every 30 seconds within 5 km of a runway; the page cannot ask faster. A quiet answer is trusted for 80 seconds (40 beside a runway), and Clear then says **Checked every 1:00** (or **0:30**): a takeoff the feed did not see on the ground can show up to that much later.
 
 The loudness numbers are guesses, not measurements. Turns away from a runway are not foreseen, and aircraft that do not broadcast their position never appear.
 

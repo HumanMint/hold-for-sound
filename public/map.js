@@ -2,7 +2,7 @@
 // The set stays in the middle and the map never pans. Geometry lives in map-geo.js, where it is tested.
 import { CLASS_NAME, located, local } from './predict.js';
 import { STALE_MS, SOON_MS } from './status.js'; // when the page stops trusting its data, and when "clear" becomes "heads up"
-import { metresPerPixel, zoomFor, tiles, toScreen, sample, heard, edge, overlaps, hit, place, labelSides, ringStep, compass, CUT_M, easeOut, morph } from './map-geo.js';
+import { metresPerPixel, zoomFor, tiles, toScreen, sample, edge, overlaps, hit, place, labelSides, ringStep, compass, CUT_M, easeOut, morph, heardOn, heardNow, clocks, moving, trustLeftS } from './map-geo.js';
 
 // Free, keyless basemap, fetched by the browser. OpenStreetMap's tile policy asks for a visible credit,
 // the browser's own caching and Referer, and only the tiles being looked at. This map never pans, so
@@ -47,7 +47,8 @@ const still = matchMedia('(prefers-reduced-motion: reduce)');
 let last = null; // the latest hfs:update
 let banner = ''; // the page's status, from hfs:status: 'hold', 'soon', 'clear', or '' for none
 // The feed can be behind while requests still succeed, so freshness is judged by the data, not the poll.
-const isStale = (now) => now - (last.dataAt ?? last.at) > STALE_MS;
+const staleMs = () => last.staleMs ?? STALE_MS;
+const isStale = (now) => now - (last.dataAt ?? last.at) > staleMs();
 let craft = []; // every aircraft in it that has a position: { hex, ac, track, win, taxiing, lost, at }
 let selected = null;
 let step = 0; // zoom, relative to the default for this box
@@ -194,9 +195,9 @@ function draw() {
   marks = [];
   if (!last) return;
   const { site, floor } = last;
-  const age = (now - last.at) / 1000;
   const stale = isStale(now);
-  const t = still.matches ? 0 : Math.min(age, STALE_MS / 1000); // reduced motion: aircraft step once per update
+  // Things are placed at `t`, which stands still with reduced motion; what is heard is decided at `real`.
+  const { draw: t, real } = clocks((now - last.at) / 1000, still.matches, trustLeftS(last.at, last.dataAt ?? last.at, staleMs()));
   const at = (m) => toScreen(view, m);
   const centre = { x: w / 2, y: h / 2 };
   const small = face(500, 0.87);
@@ -269,7 +270,7 @@ function draw() {
     if (!c.track) continue;
     const chosen = c.hex === selected;
     const path = shape(c, now);
-    const runs = s ? heard(path, floor, t) : [];
+    const runs = s ? heardOn(c.track.path, path, floor, real) : []; // the newest prediction's, placed on the line as drawn
     const colour = s === 'hold' ? theme.hold : s === 'soon' ? theme.soon : theme.ink;
     const trail = trails.get(c.hex) ?? [];
     ctx.globalAlpha = 0.6;
@@ -305,7 +306,7 @@ function draw() {
       });
       const half = run.map((q) => 1.5 + 5.5 * Math.min(1, (q.db - floor) / 25));
       const side = (sign) => pts.map((p, i) => ({ x: p.x + across[i].x * half[i] * sign, y: p.y + across[i].y * half[i] * sign }));
-      const lead = run[0].t - t;
+      const lead = run[0].t - real;
       const firm = lead <= 60 ? 1 : Math.max(0.4, 1 - (lead - 60) / 400);
       ctx.beginPath();
       [...side(1), ...side(-1).reverse()].forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
@@ -314,7 +315,7 @@ function draw() {
       ctx.fill();
       ctx.globalAlpha = firm;
       const mark = (i) => line([-7, 7].map((k) => ({ x: pts[i].x + across[i].x * k, y: pts[i].y + across[i].y * k })), 2, colour);
-      if (run[0].heardAt > t + 0.01) mark(0);
+      if (run[0].heardAt > real + 0.01) mark(0);
       mark(pts.length - 1);
     }
     ctx.globalAlpha = 1;
@@ -322,8 +323,9 @@ function draw() {
     // Sound is slow: what is heard right now was made back here.
     // shortcut: this is the predicted path run backwards, which is straight; a turning aircraft's real
     // track (the thin trail) can sit beside the ring. Keep timed positions in the trail if that matters.
+    // Drawn on the eased line; whether it is heard now is the newest prediction's, at the real time.
     const source = sample(path, 'heardAt', t);
-    if (s === 'hold' && !source.off && source.db >= floor) {
+    if (s === 'hold' && heardNow(c.track.path, floor, real)) {
       const p = at(source);
       ctx.fillStyle = theme.panel;
       ctx.fill(circle(p.x, p.y, 4.5));
@@ -663,32 +665,41 @@ document.addEventListener('hfs:update', (e) => {
   if (refit) layout();
   else draw();
   words();
+  animate();
 });
 
-// About 15 frames a second while the page is showing; nothing at all while it is hidden. With reduced
-// motion there is no animation: one redraw a second, for the countdowns.
+// About 15 frames a second while something on the map moves, and one redraw a second otherwise, for
+// the countdowns; nothing at all while the page is hidden. With reduced motion nothing moves.
 let frameId = 0;
 let timer = 0;
 let lastFrame = 0;
+function animate() {
+  if (frameId || document.hidden || !last) return;
+  const now = Date.now();
+  const eased = Math.max(-Infinity, ...[...slip.values()].map((s) => s.at));
+  if (moving({ reduced: still.matches, fresh: !isStale(now), tracks: craft.filter((c) => c.track).length, eased, now, ms: SLIP_MS })) frameId = requestAnimationFrame(loop);
+}
 function loop(ts) {
-  frameId = requestAnimationFrame(loop);
-  if (ts - lastFrame < 60) return;
-  lastFrame = ts;
-  // Nothing moves before the first update or once the data is old: one last frame greys it out, then
-  // drawing waits for the next update.
-  if (last && Date.now() - (last.dataAt ?? last.at) < STALE_MS + 2000) draw();
+  frameId = 0;
+  if (ts - lastFrame >= 60) {
+    lastFrame = ts;
+    draw();
+  }
+  animate();
 }
 function run() {
   cancelAnimationFrame(frameId);
+  frameId = 0;
   clearInterval(timer);
   if (document.hidden) return;
-  if (!still.matches) frameId = requestAnimationFrame(loop);
   timer = setInterval(() => {
     words();
-    if (still.matches) draw();
+    if (!frameId) draw();
+    animate();
   }, 1000);
   draw();
   words();
+  animate();
 }
 document.addEventListener('visibilitychange', run);
 document.addEventListener('hfs:status', (e) => {

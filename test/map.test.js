@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ENVIRONMENTS, predict } from '../public/predict.js';
-import { metresPerPixel, zoomFor, tiles, toScreen, sample, heard, edge, hit, place, labelSides, ringStep, compass, easeOut, morph } from '../public/map-geo.js';
+import { metresPerPixel, zoomFor, tiles, toScreen, sample, heard, edge, hit, place, labelSides, ringStep, compass, easeOut, morph, heardOn, heardNow, clocks, moving, trustLeftS } from '../public/map-geo.js';
+import { staleAfter } from '../public/status.js';
 
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg ?? ''} expected ${b} ± ${tol}, got ${a}`);
 
@@ -131,6 +132,53 @@ test('a path eases into its new shape, matched by time, and lands on it exactly'
   assert.equal(morph([], next, 't')(0), next, 'nothing to ease from: it appears');
 });
 
+test('a path that has not changed does not ease', () => {
+  const path = Array.from({ length: 5 }, (_, i) => ({ t: i * 2, x: i * 100, y: 0, db: 50 }));
+  assert.equal(morph(path.map((p) => ({ ...p })), path, 't')(0), path, 'the same points: it is the new path at once');
+  const close = path.map((p) => ({ ...p, db: p.db + 0.1 }));
+  assert.notEqual(morph(close, path, 't')(0), path, 'any change eases');
+  assert.equal(morph(close, path, 't', { db: 0.2 })(0), path, 'unless it is too small to count');
+});
+
+test('while a path eases, its warning band is the newest prediction’s, only placed on the line as drawn', () => {
+  // Case: corrected from 40 dB to 60 dB with a 45 dB floor. The eased line is below the floor through
+  // 200 ms, and the band was missing until then; it shows from the first frame, as wide as 60 dB.
+  const floor = 45;
+  const line = (db, x) => Array.from({ length: 30 }, (_, i) => ({ t: i * 2, heardAt: i * 2 + 3, x, y: i * 100, db }));
+  const latest = line(60, 0);
+  const shown = morph(line(40, 50), latest, 't')(easeOut(200 / 1500));
+  assert.ok(shown.every((p) => p.db < floor), 'the eased line is still under the floor at 200 ms');
+  assert.deepEqual(heard(shown, floor, 0), [], 'so the old way drew no band');
+  const runs = heardOn(latest, shown, floor, 0);
+  assert.equal(runs.length, 1);
+  assert.ok(runs[0].every((q) => q.db === 60), 'its emphasis is the newest level');
+  assert.deepEqual([runs[0][0].heardAt, runs[0].at(-1).heardAt], [heard(latest, floor, 0)[0][0].heardAt, 61], 'its ends are the newest');
+  assert.ok(runs[0].every((q) => q.x > 0 && q.x < 50), 'and it is drawn where the eased line is');
+  assert.equal(heardOn(latest, latest, floor, 0)[0].length, heard(latest, floor, 0)[0].length, 'with nothing easing it is heard() itself');
+});
+
+test('reduced motion stops where things are drawn, never when they are heard', () => {
+  // Case: a window that starts 2 s after the poll, drawn 3 s after it. The aircraft stays where the
+  // update put it, and the "heard now" ring shows, as the label's hold does.
+  const path = Array.from({ length: 30 }, (_, i) => ({ t: i * 2, heardAt: i * 2, x: 0, y: i * 100, db: i >= 1 ? 60 : 30 }));
+  const { draw, real } = clocks(3, true, 120);
+  assert.equal(draw, 0, 'the aircraft does not move');
+  assert.equal(heardNow(path, 45, real), true, 'what is heard keeps time');
+  assert.equal(heardNow(path, 45, draw), false, 'the drawing clock would have said it was not heard yet');
+  assert.deepEqual(clocks(3, false, 120), { draw: 3, real: 3 });
+  assert.deepEqual(clocks(500, false, 120), { draw: 120, real: 120 }, 'both stop once the data is too old');
+});
+
+test('the map only asks for frames while something on it moves', () => {
+  const at = { reduced: false, fresh: true, tracks: 0, eased: -Infinity, now: 10_000, ms: 1500 };
+  assert.equal(moving(at), false, 'an empty map, or only parked aircraft, sits still');
+  assert.equal(moving({ ...at, tracks: 2 }), true, 'aircraft flying their paths');
+  assert.equal(moving({ ...at, eased: 9000 }), true, 'a correction easing in');
+  assert.equal(moving({ ...at, eased: 8000 }), false, 'and once it has');
+  assert.equal(moving({ ...at, tracks: 2, fresh: false }), false, 'old data does not move');
+  assert.equal(moving({ ...at, tracks: 2, reduced: true }), false, 'nor does anything with reduced motion');
+});
+
 test('easing is quick to start and lands gently', () => {
   assert.deepEqual([-1, 0, 0.5, 1, 2].map(easeOut), [0, 0, 0.75, 1, 1]);
 });
@@ -220,4 +268,15 @@ test('compass words', () => {
   assert.equal(compass(-1, 0), 'west');
   assert.equal(compass(-1, -1), 'south-west');
   assert.equal(compass(-0.1, 1), 'north');
+});
+
+test('aircraft move on only for as long as the page trusts the data, a kept answer included', () => {
+  const T = 1_000_000;
+  // A fresh busy answer is trusted 20 s; a quiet one kept a minute, 80 s; beside a runway 30 s and 40 s.
+  assert.equal(trustLeftS(T, T, staleAfter(10)), 20);
+  assert.equal(trustLeftS(T, T, staleAfter(60)), 80, 'still moving 30 s into a minute-long answer, and on to 80');
+  // An answer that was already 30 s old when it came, trusted 40 s, has 10 s left: no further than that.
+  assert.equal(trustLeftS(T, T - 30_000, staleAfter(30)), 10);
+  assert.deepEqual(clocks(30, false, trustLeftS(T, T - 30_000, staleAfter(30))), { real: 10, draw: 10 });
+  assert.equal(trustLeftS(T, T - 90_000, staleAfter(60)), 0, 'already too old: it stands still');
 });

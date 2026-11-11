@@ -2,6 +2,13 @@
 // page and the tests.
 
 export const STALE_MS = 20_000; // flight data older than this is not trusted
+// A public server keeps a quiet sky's answer for a minute, or 30 s beside a runway, rather than 10 s
+// (cadence.js), and says so with `every`, the seconds it keeps the answer. The data may then be that
+// much older, and is trusted a third longer than that: 80 s, or 40 s. The server only goes quiet when
+// nothing could be heard within this time.
+// shortcut: the third over a slow answer is a guess, like the 10 s over a fast one. The page polls every
+// 5 s and the feed is a second or two behind, so a 30 s answer is read at most about 37 s old.
+export const staleAfter = (every = 0) => (every > 10 ? Math.max(STALE_MS, (every * 4000) / 3) : STALE_MS);
 export const SOON_MS = 60_000; // an aircraft this close turns "clear" into "heads up"
 
 // Overlapping windows run together into one hold. `windows` have start/end in epoch ms and are sorted
@@ -21,12 +28,12 @@ export function holds(windows, now) {
 // `state` is 'hold' (audible now), 'soon' (audible within a minute), 'clear', or '' when the flight
 // data is too old to say. `until` is the moment the countdown runs to: the end of this hold, or the
 // start of the next one (null when nothing is predicted). `current` is the hold under way and `next`
-// the one after it.
+// the one after it. `staleMs` is staleAfter() for the newest answer.
 // A window marked `unsure` belongs to an aircraft the feed lost so long ago that nothing can be
 // predicted from its last position any more, though it was still due to be heard (lost.js). It is no
 // hold, and while one is open the state is never 'clear': it is 'soon', with the window as `unsure`.
-export function status(windows, now, lastData) {
-  if (now - lastData > STALE_MS) return { state: '' }; // never call it clear on old data
+export function status(windows, now, lastData, staleMs = STALE_MS) {
+  if (now - lastData > staleMs) return { state: '' }; // never call it clear on old data
   const [a, b] = holds(windows, now);
   if (a && a.start <= now) return { state: 'hold', until: a.end, current: a, next: b };
   const unsure = windows.find((w) => w.unsure && w.start <= now && w.end > now);

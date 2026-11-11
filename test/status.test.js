@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { holds, status, steady, STALE_MS, SETTLE_MS } from '../public/status.js';
+import { holds, status, steady, staleAfter, STALE_MS, SETTLE_MS } from '../public/status.js';
 
 const NOW = 1_000_000;
 // A window that starts `from` seconds from now and ends `to` seconds from now.
@@ -42,6 +42,28 @@ test('old flight data is never clear, whatever was predicted', () => {
   assert.equal(status([win('a', -10, 30)], NOW, last).state, '');
   assert.equal(status([], NOW, 0).state, ''); // no data yet
   assert.equal(status([], NOW, NOW - STALE_MS).state, 'clear'); // right at the limit still counts
+  // A night with no flight data from 02:00 on: No data every second of 6 h 17 min, whatever came before.
+  let shown = steady(status([win('a', -5, 30)], NOW, NOW), NOW, null, NOW);
+  assert.equal(shown.state, 'hold');
+  const seen = new Set();
+  for (let s = 21; s <= 6 * 3600 + 17 * 60; s++) seen.add((shown = steady(status([win('a', -5, 30)], NOW + s * 1000, NOW), NOW + s * 1000, shown, NOW)).state);
+  assert.deepEqual([...seen], ['']);
+});
+
+test('a quiet sky kept for a minute is trusted for 80 s, one kept 30 s for 40 s, and nothing else for more than 20 s', () => {
+  assert.equal(staleAfter(), STALE_MS); // no `every`: a recording, or a server from before it
+  assert.equal(staleAfter(4), STALE_MS); // local: 4 s
+  assert.equal(staleAfter(10), STALE_MS); // public, busy: 10 s
+  assert.equal(staleAfter(60), 80_000); // public, quiet: a minute
+  assert.equal(staleAfter(30), 40_000); // public, quiet beside a runway: 30 s
+  assert.equal(status([], NOW, NOW - 37_000, staleAfter(30)).state, 'clear');
+  assert.equal(status([], NOW, NOW - 40_001, staleAfter(30)).state, '', 'an unseen takeoff cannot hide behind a 30 s answer for long');
+  // The page polls every 5 s, so a minute's answer is replaced when it is 60 to 65 s old, after the
+  // feed's own second or two of delay: it never reads as no data while that works.
+  assert.equal(status([], NOW, NOW - 67_000, staleAfter(60)).state, 'clear');
+  assert.equal(status([], NOW, NOW - 80_001, staleAfter(60)).state, '');
+  assert.equal(status([], NOW, NOW - 21_000, staleAfter(10)).state, '');
+  assert.equal(status([win('a', -10, 30)], NOW, NOW - 70_000, staleAfter(60)).state, 'hold');
 });
 
 test('a hold that stops well before it was due is kept up for 10 s before it is called clear', () => {

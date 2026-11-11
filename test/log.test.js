@@ -292,14 +292,29 @@ test('a chunk of spectrogram is kept as bytes in a file of its own, and only if 
 });
 
 test('the sizes a session and the directory stop at hold for the spectrogram too, with a twelve-hour day to spare', () => {
-  // One session's size is all three of its files together.
+  // One session's size is all three of its files together. The spectrogram stops an eighth short of
+  // it, and the rest of the session goes on into that eighth.
   const dir = temp();
   const log = createLog(dir, { sessionMax: 100_000, clock: () => DAY });
-  const sizeOf = () => readdirSync(dir).reduce((sum, f) => sum + readFileSync(join(dir, f)).length, 0);
+  const sizeOf = (kind = '') => readdirSync(dir).filter((f) => f.includes(kind)).reduce((sum, f) => sum + readFileSync(join(dir, f)).length, 0);
   let n = 0;
-  while (log.request('POST', batch(ONE, n, [chunk(DAY + n * 10_000)])).ok) assert.ok(++n < 20, 'it stops');
-  assert.ok(n === 4 && sizeOf() <= 100_000, `${n} chunks, ${sizeOf()} bytes`);
-  assert.deepEqual(log.request('POST', batch(ONE, n + 1)), { status: 200, full: true }, 'and the rest of the session stops with it');
+  let answer;
+  while ((answer = log.request('POST', batch(ONE, n, [chunk(DAY + n * 10_000)]))).spec !== false) assert.ok(answer.ok && ++n < 20, 'it stops');
+  assert.deepEqual(answer, { status: 200, ok: true, spec: false });
+  assert.ok(n === 3 && sizeOf() <= 87_500, `${n} chunks, ${sizeOf()} bytes`);
+  const spec = sizeOf('spec');
+  const lines = read(join(dir, readdirSync(dir).find((f) => f.includes('log')))).length;
+  // A post with spectrogram and something else: the something else is kept, without the chunk's line.
+  assert.deepEqual(log.request('POST', batch(ONE, ++n, [{ k: 'mark', at: DAY, heard: true }, chunk(DAY)])), { status: 200, ok: true, spec: false });
+  const stored = read(join(dir, readdirSync(dir).find((f) => f.includes('log'))));
+  assert.deepEqual(stored.slice(lines).map((e) => e.k), ['post', 'mark']);
+  // The rest goes on until the session is full, and then stops too.
+  while ((answer = log.request('POST', batch(ONE, ++n))).ok) {
+    log.frame(ONE, DAY + n * 5000, [row('a1b2c3')]);
+    assert.ok(n < 2000, 'it stops');
+  }
+  assert.deepEqual(answer, { status: 200, full: true }, 'and the rest of the session stops with it');
+  assert.ok(sizeOf() <= 100_000 && sizeOf() > 95_000 && sizeOf('spec') === spec, `${sizeOf()} bytes`);
   log.frame(ONE, DAY, [row('a1b2c3')]);
   assert.ok(sizeOf() <= 100_000);
 
@@ -343,4 +358,44 @@ test('sessions are deleted once the day they began is 90 days old', () => {
   const log = createLog(dir, { clock: () => DAY });
   assert.deepEqual(readdirSync(dir).sort(), [`${kept}-${ONE}.feed.jsonl.gz`, `${kept}-${ONE}.log.jsonl.gz`, `${kept}-${ONE}.spec.bin.gz`, 'notes.txt']);
   assert.equal(log.request('GET').on, true);
+});
+
+test('a batch that does not fit the directory is not stored in part, and is stored whole once there is room', () => {
+  const dir = temp();
+  const options = { dirMax: 100_000, clock: () => DAY };
+  let log = createLog(dir, options);
+  assert.deepEqual(log.request('POST', batch(ONE, 0)), { status: 200, ok: true });
+  const file = (kind) => join(dir, `2026-11-10-${ONE}.${kind}.gz`);
+  const before = readFileSync(file('log.jsonl'));
+  // Another session fills the directory to 84.5 KB of its 100 KB.
+  writeFileSync(join(dir, `2026-11-10-${TWO}.feed.jsonl.gz`), randomBytes(84_512 - before.length));
+  log = createLog(dir, options);
+  const mixed = batch(ONE, 1, [{ k: 'mark', at: DAY, heard: true }, chunk(DAY)]);
+  assert.deepEqual(log.request('POST', mixed), { status: 200, full: true });
+  assert.deepEqual(readFileSync(file('log.jsonl')), before, 'not its mark, nor its chunk\'s line');
+  assert.equal(existsSync(file('spec.bin')), false);
+  // After a restart, with room again, the page's repeat of it is stored, all of it.
+  rmSync(join(dir, `2026-11-10-${TWO}.feed.jsonl.gz`));
+  log = createLog(dir, options);
+  assert.deepEqual(log.request('POST', mixed), { status: 200, ok: true });
+  assert.deepEqual(read(file('log.jsonl')).map((e) => e.k), ['session', 'post', 'mark', 'post', 'mark', 'spec']);
+  assert.equal(spectrogram(file('spec.bin'))[0].at.length, 80);
+});
+
+test('once a session\'s spectrogram has stopped, every answer says so: a repeat, and after a restart', () => {
+  const dir = temp();
+  const options = { sessionMax: 64_000, clock: () => DAY };
+  let log = createLog(dir, options);
+  const specs = () => readFileSync(join(dir, `2026-11-10-${ONE}.spec.bin.gz`)).length;
+  let n = 0;
+  while (log.request('POST', batch(ONE, n, [chunk(DAY + n * 10_000)])).spec !== false) assert.ok(++n < 10);
+  const kept = specs();
+  // The answer to that batch was lost, and the page sends it again.
+  assert.deepEqual(log.request('POST', batch(ONE, n, [chunk(DAY + n * 10_000)])), { status: 200, ok: true, spec: false });
+  // The server restarts: the repeat is answered the same, and a later chunk small enough to fit is still not kept.
+  log = createLog(dir, options);
+  assert.deepEqual(log.request('POST', batch(ONE, n, [chunk(DAY + n * 10_000)])), { status: 200, ok: true, spec: false });
+  assert.deepEqual(log.request('POST', batch(ONE, n + 1, [chunk(DAY + 100_000, 1)])), { status: 200, ok: true, spec: false });
+  assert.deepEqual(log.request('POST', batch(ONE, n + 2)), { status: 200, ok: true, spec: false });
+  assert.equal(specs(), kept);
 });

@@ -4,8 +4,8 @@ import { readFileSync } from 'node:fs';
 import { predict } from '../public/predict.js';
 import { BINS, FMIN, FMAX } from '../public/hear.js';
 import { tune } from '../public/tune.js';
-import { morph } from '../public/map-geo.js';
-import { layout, LOW, HIGH, overOf, heardOver, levelY, pitchY, shade, rowBins, ticks, createForecast, levelAt, runs, audible, held, series, place, untrimmed, createClock, say, PROBLEMS, explain, recap, notable, siteKey, file, restore, sameTuning } from '../public/listen-view.js';
+import { morph, easeOut } from '../public/map-geo.js';
+import { layout, LOW, HIGH, curve, UNCHANGED, overOf, heardOver, levelY, pitchY, shade, rowBins, ticks, createForecast, levelAt, runs, audible, held, series, place, untrimmed, createClock, say, PROBLEMS, explain, recap, notable, siteKey, file, restore, sameTuning, fittedLines, fitLabel, triedLines } from '../public/listen-view.js';
 
 // The parts of the listening panel that need no page. What the canvas looks like is checked by eye.
 
@@ -151,6 +151,63 @@ test('the timeline eases a new forecast out of the old one only where that makes
   assert.equal(forecast.planes.get('jet001').was, null, 'gone: its future is cut, as before');
   forecast.update(update([jet], 30));
   assert.equal(forecast.planes.get('jet001').was, null, 'back again: it appears');
+});
+
+test('while a curve eases, whether it shows and its name are the newest forecast’s', () => {
+  // A pass whose loudest moment, `db`, is heard `peak` seconds after START, with a sample every 2 s.
+  const pass = (peak, db, fall) => Array.from({ length: 211 }, (_, i) => {
+    const s = i * 2 - 60;
+    return { at: START + s * 1000, t: START + s * 1000, db: db - fall * (s - peak) ** 2 };
+  });
+  const floor = 45;
+  const show = (was, pts, ms) => morph(was, pts, 't', UNCHANGED)(easeOut(ms / 1500));
+  // The flag rule in listen.js: a name shows for a loud pass whose loudest moment is on the timeline.
+  const named = (s) => !!s && s.loud && s.peaked;
+
+  // Case: a correction from 30 to 60 dB with a 45 dB floor, drawn 100 ms in. The eased curve is still
+  // under the bottom of the chart, and showed nothing: no curve and no name, even when selected.
+  let plane = { hex: 'a', pts: pass(30, 60, 0.002) };
+  let shown = show(pass(30, 30, 0.002), plane.pts, 100);
+  const [from, to] = [START - 60_000, START + 240_000];
+  assert.equal(curve({ pts: shown }, shown, from, to, floor), null, 'deciding on the eased curve showed nothing');
+  let s = curve(plane, shown, from, to, floor);
+  assert.ok(named(s), 'the newest forecast is loud, with its peak on the timeline');
+  assert.deepEqual(s.lines, [], 'while the outline is still below the chart');
+  assert.equal(s.anchor.at, START + 30_000, 'the name stands where the peak will be');
+  assert.ok(s.anchor.db < floor + LOW, 'at the bottom of the chart, where the eased curve is');
+
+  // Case: the peak moves from beyond the right edge to now. 400 ms in, the eased curve still rises off
+  // the right edge, which hid the name.
+  plane = { hex: 'b', pts: pass(0, 60, 0.0005) };
+  shown = show(pass(300, 60, 0.0005), plane.pts, 400);
+  const edge = [START - 60_000, START + 120_000];
+  assert.equal(named(curve({ pts: shown }, shown, ...edge, floor)), false, 'deciding on the eased curve hid the name');
+  s = curve(plane, shown, ...edge, floor);
+  assert.ok(named(s), 'the newest peak is on the timeline: the name shows');
+  assert.equal(s.at, START, 'and it is sorted by when the newest forecast peaks');
+  assert.ok(s.anchor.at >= edge[0] && s.anchor.at <= edge[1], 'its pole stays on the timeline');
+  assert.ok(s.lines.length, 'the outline eases');
+
+  // Nothing easing: the outline is the newest forecast's own, and so is the pole.
+  s = curve(plane, plane.pts, ...edge, floor);
+  assert.deepEqual(s.lines, runs(plane, ...edge, floor + LOW));
+  assert.deepEqual(s.anchor, { at: START, db: 60 });
+  // The newest forecast quiet: nothing shows, however loud the eased curve still is.
+  assert.equal(curve({ hex: 'c', pts: pass(0, 20, 0.002) }, pass(0, 60, 0.002), ...edge, floor), null);
+});
+
+test('a forecast that has not changed does not ease', () => {
+  // The same aircraft, polled again 5 s later: its forecast is resampled, not changed.
+  const jet = plane({ hex: 'jet001', over: 60 });
+  const forecast = createForecast();
+  forecast.update(update([jet], 0));
+  forecast.update(update([jet], 5));
+  const same = forecast.planes.get('jet001');
+  assert.ok(same.was, 'it would ease');
+  assert.equal(morph(same.was, same.pts, 't', UNCHANGED)(0), same.pts, 'but there is nothing to ease: the timeline asks for no frames');
+  forecast.update(update([(s) => ({ ...jet(s), alt_baro: 2600 })], 10));
+  const lower = forecast.planes.get('jet001');
+  assert.notEqual(morph(lower.was, lower.pts, 't', UNCHANGED)(0), lower.pts, 'a real correction still eases');
 });
 
 test('the hold rail never shows a hold that the page does not have', () => {
@@ -502,4 +559,49 @@ test('listening never starts by itself: only a press of the button asks for the 
   const page = readFileSync(new URL('../public/listen.js', import.meta.url), 'utf8');
   assert.doesNotMatch(page, /permissions\.query|saved\.on/);
   assert.deepEqual([...page.matchAll(/\blisten\((?!device\))[^)]*\)/g)].map((m) => m[0]).sort(), ["listen('')", 'listen(core.saved.device)', 'listen(ui.select.value)']);
+});
+
+test('a fitted curve is drawn along its tones, with its values beside it', () => {
+  const at = 1_800_000_030_000;
+  const c = { from: at - 10_000, to: at + 5000, at, distance: 305, speed: 72, hz: [80, 160], kind: 'propeller', hex: 'a1b2c3', offset: -6.04, until: null };
+  const lines = fittedLines(c, 500);
+  assert.equal(lines.length, 2, 'one line for each tone');
+  assert.deepEqual([lines[0][0][0], lines[0].at(-1)[0]], [c.from, c.to], 'from when its tones were first seen to the last');
+  assert.ok(lines[0][0][1] > 80 && lines[0].at(-1)[1] < 80 && lines[1][0][1] > 160, 'high coming in, low going away');
+  assert.equal(fitLabel(c, at), '~72 m/s · ~305 m · propeller? · −6.0 s');
+  assert.equal(fitLabel({ ...c, offset: 1.5, kind: null }, at), '~72 m/s · ~305 m · +1.5 s');
+  // With no track: how long the noise may last, while that is still ahead.
+  const none = { ...c, hex: null, offset: null, kind: 'jet', until: at + 21_400 };
+  assert.equal(fitLabel(none, at), '~72 m/s · ~305 m · jet? · fade ~21 s');
+  assert.equal(fitLabel(none, at + 30_000), '~72 m/s · ~305 m · jet?');
+});
+
+test('the aircraft tried against the sound are listed with what each search made of them', () => {
+  const name = (hex) => ({ a1: 'N797HG', j1: 'JIA5377', j2: 'RPA3492' })[hex] ?? hex;
+  const status = {
+    expected: [
+      { hex: 'a1', level: 60, swing: 26.2 },
+      { hex: 'j1', level: 55, swing: 31 },
+      { hex: 'j2', level: 50, swing: null },
+    ],
+    tried: [
+      { hex: 'a1', why: null },
+      { hex: 'j1', why: 'steady' },
+      { hex: 'j2', why: 'short' },
+    ],
+    curves: [
+      { tried: [{ hex: 'a1', why: null, offset: -9.2 }, { hex: 'j1', why: 'time', offset: 18 }] },
+      { tried: [{ hex: 'a1', why: 'distance', offset: 2 }] },
+    ],
+  };
+  assert.deepEqual(triedLines(status, name), [
+    'N797HG · 26 % swing · pitch matched · curve −9.2 s',
+    'JIA5377 · 31 % swing · pitch: steady tone · curve: +18.0 s off',
+    'RPA3492 · pitch: too little track',
+  ]);
+  // A curve that fits two of them is neither's.
+  const two = { ...status, curves: [{ tried: [{ hex: 'a1', why: 'ambiguous', offset: -6 }, { hex: 'j1', why: 'ambiguous', offset: 0.4 }] }] };
+  assert.deepEqual(triedLines(two, name).slice(0, 2), ['N797HG · 26 % swing · pitch matched · curve: fits another', 'JIA5377 · 31 % swing · pitch: steady tone · curve: fits another']);
+  assert.deepEqual(triedLines(status, name, 1).length, 1, 'only the loudest few');
+  assert.deepEqual(triedLines({ expected: [], tried: [], curves: [] }, name), []);
 });

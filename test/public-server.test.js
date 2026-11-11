@@ -9,6 +9,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { read } from '../log.js';
 
+// Every test server answers the runway table from TEST_RUNWAYS (none, unless a test gives some).
+const RUNWAYS = new URL('fixtures/runways.mjs', import.meta.url).pathname;
 // Exercise the actual server and its environment, not a second copy of the request guard.
 async function server(t, extra = {}) {
   const reserve = http.createServer();
@@ -23,7 +25,7 @@ async function server(t, extra = {}) {
   await new Promise((done) => reserve.close(done));
   const child = spawn(process.execPath, ['server.js'], {
     cwd: new URL('..', import.meta.url),
-    env: { ...process.env, PORT: String(port), OWNER_PORT: String(statsPort), PUBLIC_HOST: 'example.test', PASSWORD: '', LOG_DIR: '', RECEIVER: '', REPLAY: 'test/fixtures/lax.jsonl', ...extra },
+    env: { ...process.env, PORT: String(port), OWNER_PORT: String(statsPort), PUBLIC_HOST: 'example.test', PASSWORD: '', LOG_DIR: '', RECEIVER: '', REPLAY: 'test/fixtures/lax.jsonl', ...extra, NODE_OPTIONS: `${extra.NODE_OPTIONS ?? ''} --import=${RUNWAYS}`.trim() },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   t.after(() => child.kill());
@@ -319,7 +321,10 @@ test('a full cache forgets its oldest answer, not every answer', async (t) => {
   assert.equal(await count('nominatim.openstreetmap.org'), 502, 'an address among the newest 500 is still answered from memory');
 });
 
-test('in public one flight answer serves a place for 10 s, and adsb.lol stops before its daily budget, key or no key', async (t) => {
+// An airliner 5 km south of a place at 34,-118, low and inbound: an answer with it in is busy (cadence.js).
+const BUSY = '[{ hex: "abc123", lat: 33.955, lon: -118, alt_baro: 3000, gs: 250, track: 0, seen_pos: 0 }]';
+
+test('in public a busy sky\'s answer serves a place for 10 s, and adsb.lol stops before its daily budget, key or no key', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'hfs-budget-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const clock = join(dir, 'clock');
@@ -329,10 +334,10 @@ test('in public one flight answer serves a place for 10 s, and adsb.lol stops be
   await writeFile(calls, '');
   await writeFile(mock, `import { readFileSync, appendFileSync } from 'node:fs';
     const realNow = Date.now; Date.now = () => realNow() + Number(readFileSync(${JSON.stringify(clock)}, 'utf8'));
-    globalThis.fetch = async () => { appendFileSync(${JSON.stringify(calls)}, 'call\\n'); return Response.json({ ac: [], now: Date.now() }); };`);
+    globalThis.fetch = async () => { appendFileSync(${JSON.stringify(calls)}, 'call\\n'); return Response.json({ ac: ${BUSY}, now: Date.now() }); };`);
   const { request } = await server(t, { REPLAY: '', ADSB_LOL_DAY: '2', NODE_OPTIONS: `--import=${mock}` });
   const count = async () => (await readFile(calls, 'utf8')).trim().split('\n').filter(Boolean).length;
-  assert.equal((await request('/api/aircraft?lat=34&lon=-118')).status, 200);
+  assert.equal(JSON.parse((await request('/api/aircraft?lat=34&lon=-118')).body).every, 10);
   await writeFile(clock, '8000');
   assert.equal((await request('/api/aircraft?lat=34&lon=-118')).status, 200);
   assert.equal(await count(), 1, 'answered from memory for 10 s');
@@ -346,6 +351,127 @@ test('in public one flight answer serves a place for 10 s, and adsb.lol stops be
   assert.equal(await count(), 2, 'no request past the budget');
   await writeFile(clock, String(86_400_000 + 1000));
   assert.equal((await request('/api/aircraft?lat=35&lon=-118')).status, 200, 'a day later it goes on');
+});
+
+test('in public a quiet sky\'s answer serves a place for a minute, and the server, not the page, decides', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'hfs-cadence-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const clock = join(dir, 'clock');
+  const sky = join(dir, 'sky');
+  const calls = join(dir, 'calls');
+  const mock = join(dir, 'fetch.mjs');
+  await writeFile(clock, '0');
+  await writeFile(sky, 'quiet');
+  await writeFile(calls, '');
+  await writeFile(mock, `import { readFileSync, appendFileSync } from 'node:fs';
+    const realNow = Date.now; Date.now = () => realNow() + Number(readFileSync(${JSON.stringify(clock)}, 'utf8'));
+    const wait = setTimeout; globalThis.setTimeout = (fn, ms, ...rest) => wait(fn, Math.min(ms, 1), ...rest);
+    globalThis.fetch = async () => {
+      appendFileSync(${JSON.stringify(calls)}, 'call\\n');
+      return Response.json({ ac: readFileSync(${JSON.stringify(sky)}, 'utf8') === 'busy' ? ${BUSY} : [], now: Date.now() });
+    };`);
+  const { request } = await server(t, { REPLAY: '', NODE_OPTIONS: `--import=${mock}` });
+  const count = async () => (await readFile(calls, 'utf8')).trim().split('\n').filter(Boolean).length;
+  const at = async (s, path = '/api/aircraft?lat=34&lon=-118') => {
+    await writeFile(clock, String(s * 1000));
+    const res = await request(path);
+    assert.equal(res.status, 200);
+    return JSON.parse(res.body);
+  };
+  assert.equal((await at(0)).every, 60);
+  const old = await at(59);
+  assert.equal(await count(), 1, 'answered from memory for a minute');
+  assert.ok(old.age >= 58 && old.age < 60, `the page is told how old it is: ${old.age}`);
+  assert.equal((await at(61)).every, 60);
+  assert.equal(await count(), 2);
+  await writeFile(sky, 'busy');
+  assert.equal((await at(100, '/api/aircraft?lat=34&lon=-118&every=1')).every, 60, 'a page cannot ask for faster updates');
+  assert.equal(await count(), 2);
+  assert.equal((await at(122)).every, 10, 'the next answer has an aircraft inbound');
+  assert.equal((await at(130)).every, 10);
+  assert.equal(await count(), 3, 'answered from memory for 10 s');
+  await at(133);
+  assert.equal(await count(), 4);
+  await writeFile(sky, 'quiet');
+  assert.equal((await at(144)).every, 60, 'gone quiet again');
+  await at(200);
+  assert.equal(await count(), 5);
+});
+
+test('a night of quiet sky, polled every 5 s, costs at most 60 adsb.lol requests an hour: 900 a day last 15 hours', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'hfs-night-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const clock = join(dir, 'clock');
+  const calls = join(dir, 'calls');
+  const mock = join(dir, 'fetch.mjs');
+  await writeFile(clock, '0');
+  await writeFile(calls, '');
+  await writeFile(mock, `import { readFileSync, appendFileSync } from 'node:fs';
+    const realNow = Date.now; Date.now = () => realNow() + Number(readFileSync(${JSON.stringify(clock)}, 'utf8'));
+    const wait = setTimeout; globalThis.setTimeout = (fn, ms, ...rest) => wait(fn, Math.min(ms, 1), ...rest);
+    globalThis.fetch = async () => { appendFileSync(${JSON.stringify(calls)}, 'call\\n'); return Response.json({ ac: [], now: Date.now() }); };`);
+  const { request } = await server(t, { REPLAY: '', NODE_OPTIONS: `--import=${mock}` });
+  const count = async () => (await readFile(calls, 'utf8')).trim().split('\n').filter(Boolean).length;
+  // The page asks every 5 s, so a minute's answer is replaced by the poll at 60 s or the one at 65 s,
+  // as the polls fall: here time runs on between them, so at 60.
+  for (let s = 0; s < 3600; s += 5) {
+    await writeFile(clock, String(s * 1000));
+    assert.equal((await request('/api/aircraft?lat=34&lon=-118')).status, 200);
+  }
+  const hour = await count();
+  assert.ok(hour >= Math.ceil(3600 / 65) && hour <= 60, `${hour} an hour`);
+  // A busy hour, at 10 s answers, is 240 to 360: 900 would last under 4 hours.
+  assert.ok(hour * 15 <= 900, `${hour} an hour: 15 hours cost ${hour * 15}`);
+});
+
+// A runway as OurAirports lists it, running east-west about 1 km south of 34,-118.
+const RUNWAY_CSV = 'id,airport_ref,airport_ident,length_ft,width_ft,surface,lighted,closed,le_ident,le_latitude_deg,le_longitude_deg,le_elevation_ft,le_heading_degT,le_displaced_threshold_ft,he_ident,he_latitude_deg,he_longitude_deg,he_elevation_ft\n'
+  + '1,1,KTST,8000,150,ASP,1,0,09,33.99,-118.02,100,90,0,27,33.99,-117.98,100\n';
+
+test('beside a runway a quiet sky is asked about every 30 s: a quiet night there costs at most 120 adsb.lol requests an hour', async (t) => {
+  const up = await upstream(t, () => Response.json({ ac: [], now: Date.now() }));
+  const quick = join(up.dir, 'timeout.mjs'); // the queue's 1.6 s gap cut to a millisecond
+  await writeFile(quick, 'const wait = setTimeout; globalThis.setTimeout = (fn, ms, ...rest) => wait(fn, Math.min(ms, 1), ...rest);');
+  const s = await server(t, { ...up.env, TEST_RUNWAYS: RUNWAY_CSV, NODE_OPTIONS: `${up.env.NODE_OPTIONS} --import=${quick}` });
+  const ask = async (sec, lat) => {
+    await up.at(sec * 1000);
+    const res = await s.request(`/api/aircraft?lat=${lat}&lon=-118`);
+    assert.equal(res.status, 200);
+    return JSON.parse(res.body).every;
+  };
+  assert.equal(await ask(0, 35), 60, 'no runway near');
+  assert.equal(await ask(0, 34), 30, 'a runway 1 km away');
+  assert.equal(await ask(29, 34), 30);
+  assert.equal(await up.count(), 2, 'answered from memory for 30 s');
+  assert.equal(await ask(31, 34), 30);
+  assert.equal(await up.count(), 3);
+  // The page asks every 5 s, so a 30 s answer is replaced by the poll at 30 s or the one at 35 s.
+  for (let sec = 35; sec < 3635; sec += 5) await ask(sec, 34);
+  const hour = (await up.count()) - 3;
+  assert.ok(hour >= Math.floor(3600 / 35) && hour <= 120, `${hour} an hour`);
+});
+
+test('a place nobody asks about is forgotten a minute after its answer runs out, ten where aircraft are on the ground', async (t) => {
+  // The maintenance timer runs every 50 ms instead of every minute.
+  const up = await upstream(t, () => Response.json({ ac: [{ hex: 'aaa111', lat: 33.99, lon: -118, alt_baro: 'ground', gs: 0, seen_pos: 0 }], now: Date.now() }));
+  const fast = join(up.dir, 'interval.mjs');
+  await writeFile(fast, 'const every = setInterval; globalThis.setInterval = (fn, ms, ...rest) => every(fn, Math.min(ms, 50), ...rest);');
+  const s = await server(t, { ...up.env, NODE_OPTIONS: `${up.env.NODE_OPTIONS} --import=${fast}` });
+  const ask = async (sec) => {
+    await up.at(sec * 1000);
+    await new Promise((done) => setTimeout(done, 200)); // a sweep or two at this time
+    const res = await s.request('/api/aircraft?lat=34&lon=-118');
+    assert.equal(res.status, 200);
+    return JSON.parse(res.body).every;
+  };
+  // An aircraft parked 1 km away: new at first, so a taxi; 10 minutes on, known and still, so quiet.
+  assert.equal(await ask(0), 10);
+  assert.equal(await ask(601), 60);
+  // Asked again within ten minutes of that answer running out, the place still knows it was parked.
+  assert.equal(await ask(601 + 60 + 590), 60);
+  // Left for longer, the place is forgotten: the aircraft is new again, and counts as a taxi.
+  assert.equal(await ask(601 + 60 + 590 + 60 + 610), 10);
+  assert.equal(await up.count(), 4);
 });
 
 test('a provider reset delay longer than a day is held to a day', async (t) => {
@@ -445,6 +571,22 @@ async function upstream(t, answer) {
     at: (ms) => writeFile(clock, String(ms)),
   };
 }
+
+test('adsb.lol also stops before its weekly budget, though each day has room', async (t) => {
+  const up = await upstream(t, () => Response.json({ ac: [], now: Date.now() }));
+  const s = await server(t, { ...up.env, ADSB_LOL_DAY: '100', ADSB_LOL_WEEK: '2' });
+  const me = { 'cf-connecting-ip': '198.51.100.6' };
+  assert.equal((await s.request('/api/aircraft?lat=34&lon=-118', me)).status, 200);
+  await up.at(2 * 86_400_000);
+  assert.equal((await s.request('/api/aircraft?lat=35&lon=-118', me)).status, 200);
+  const over = await s.request('/api/aircraft?lat=36&lon=-118', me);
+  assert.equal(over.status, 429);
+  assert.equal(JSON.parse(over.body).code, 'flight_quota');
+  assert.ok(Math.abs(Number(over.headers['retry-after']) - 5 * 86_400) < 30, `until a week after the first, got ${over.headers['retry-after']}`);
+  assert.equal(await up.count(), 2);
+  await up.at(7 * 86_400_000 + 1000);
+  assert.equal((await s.request('/api/aircraft?lat=36&lon=-118', me)).status, 200, 'a week on it goes on');
+});
 
 test('the adsb.lol budget survives a restart, keeps no client address, and a file it cannot understand is a spent day', async (t) => {
   const up = await upstream(t, () => Response.json({ ac: [], now: Date.now() }));

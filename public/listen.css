@@ -27,9 +27,10 @@
 #listen > .say { grid-row: 2; height: calc(var(--text-l) * 1.2 + var(--text-m) * 1.4 * var(--say-lines, 2)); overflow-y: auto; }
 #listen > .chart { grid-row: 3; }
 #listen > .key { grid-row: 4; }
-#listen > .about { grid-row: 5; }
-#listen > .learned { grid-row: 6; }
-#listen > .controls { grid-row: 7; }
+#listen > .tried { grid-row: 5; }
+#listen > .about { grid-row: 6; }
+#listen > .learned { grid-row: 7; }
+#listen > .controls { grid-row: 8; }
 #listen [hidden] { display: none !important; }
 #listen p { max-width: 76ch; text-wrap: pretty; }
 #listen p:empty { display: none; }
@@ -55,6 +56,11 @@
 #listen .k-pred { background: color-mix(in srgb, var(--ink) 14%, transparent); border-top: 2px solid var(--ink); }
 #listen .k-hold { height: 0.25rem; margin-bottom: 0.1875rem; background: var(--hold); }
 #listen .k-pitch { height: 0; margin-bottom: 0.25rem; border-top: 2px dashed var(--ink); }
+#listen .k-fit { height: 0; margin-bottom: 0.25rem; border-top: 2px dotted var(--ink); }
+
+/* Which aircraft the engine tried against the sound, one line each. */
+#listen .tried { margin: 0; padding: 0; list-style: none; font-size: var(--text-s); font-variant-numeric: tabular-nums; }
+#listen .tried:empty { display: none; }
 
 #listen .learned { display: grid; gap: 0.375rem; }
 #listen .last { font-weight: 700; }

@@ -36,6 +36,32 @@ export const ENVIRONMENTS = {
 const TAKEOFF = { A1: [1.5, 31, 41, 3.5], A2: [2.2, 59, 87, 12.7] };
 const TAKEOFF_JET = [2, 77, 93, 12.7];
 const LINE_UP_S = 20; // an aircraft lined up but not moving is guessed to start its roll this much later
+// shortcut: LINE_UP_M, ROLL_KT and HOLDING_M are guesses from 8 takeoffs from one runway, logged beside
+// one airport. Each lined up 95 to 160 m before the runway end OurAirports gives, on paved entry before
+// the threshold, and the slowest first report of a roll there was 15 kt, from 3 kt the report before.
+const LINE_UP_M = 200; // how far before a runway end, along its centreline, an aircraft can line up
+const ROLL_KT = 10; // on the centreline at this or more, and faster than its report before: rolling
+// A holding point: within this far of a runway's centreline and of one of its ends. That airport's are
+// 86 to 113 m off; aircraft parked on an apron beside one of its runway ends stand 139 to 149 m off.
+const HOLDING_M = [120, 250];
+
+// Which way an aircraft points: in the air, its track.
+const headingOf = (ac) => ac.track ?? ac.true_heading;
+// On the ground the feed's track often lags a turn: of reports with both, moving at 8 kt or more, in
+// those sessions and the LAX recording, track was over 30 degrees from the way the aircraft moved in 58
+// of 155 and heading in 6. But a heading can be stale too. So on the ground it is the heading, unless
+// the track is more than AGREE_DEG from it: then whichever of them the way it has moved (`m.way`,
+// motion.js) agrees with, and when that cannot tell, both. Returns one or two directions, the first
+// the more likely.
+// shortcut: AGREE_DEG is a guess.
+const AGREE_DEG = 30;
+const apart = (a, b) => Math.abs(((((a - b + 180) % 360) + 360) % 360) - 180);
+function ways(ac, m) {
+  const [h, k] = [ac.true_heading, ac.track];
+  if (h == null || k == null || apart(h, k) <= AGREE_DEG) return [h ?? k];
+  const fits = m?.way == null ? [] : [h, k].filter((d) => apart(d, m.way) <= AGREE_DEG);
+  return fits.length === 1 ? fits : [h, k];
+}
 
 // Metres east/north of the site. Flat earth is fine at this range.
 export const local = (p, site) => ({
@@ -107,7 +133,7 @@ const FAN = [-1.59, -0.97, -0.59, -0.28, 0, 0.28, 0.59, 0.97, 1.59]; // nine equ
 const ROUGH_DEG = 10; // a window that starts where a helicopter's heading is less sure than this is rough
 function helicopter(ac, pos, alt0, vz, site, m) {
   const line = straight(ac, pos, alt0, vz, site);
-  if (!m) return line;
+  if (!m?.area) return line; // nothing known of how it has been flying
   if (m.hovering || m.circling) {
     const drift = m.slow && !m.circling ? m.drift : { x: 0, y: 0 };
     const to = m.hovering ? pos : m.area.map((p) => local(p, site)).sort((a, b) => Math.hypot(a.x, a.y) - Math.hypot(b.x, b.y))[0];
@@ -135,9 +161,38 @@ function helicopter(ac, pos, alt0, vz, site, m) {
   };
 }
 
-// On final approach to a known runway: it follows the centreline down and goes quiet at touchdown,
+// After touchdown: the rollout. It brakes down the runway at ROLLOUT_DECEL, with reverse thrust and
+// brakes as loud as the approach at first and quieter as it slows, and goes quiet at taxiing speed.
+// shortcut: guesses, from 10 arrivals at that airport that went on being heard for half of the 30 s
+// after touchdown, against a fifth with no aircraft about. 2 m/s² takes an airliner from 125 kt to
+// 30 kt in about 25 s. A level by type, and reverse thrust that some use and some do not, are unknown.
+const ROLLOUT_DECEL = 2; // m/s²
+const ROLLOUT_MS = [65, 15]; // m/s: as loud as the approach at the first, quiet below the second
+const ROLLOUT_DB = [-4, -14]; // boost at those speeds, and straight between them
+function rollout(lane, x0, y0, v0) {
+  const fade = (v) => ROLLOUT_DB[0] + ((ROLLOUT_DB[1] - ROLLOUT_DB[0]) * (ROLLOUT_MS[0] - Math.min(v, ROLLOUT_MS[0]))) / (ROLLOUT_MS[0] - ROLLOUT_MS[1]);
+  const stop = (v0 - ROLLOUT_MS[1]) / ROLLOUT_DECEL; // seconds until it is down to taxiing speed
+  return (age) => {
+    const t = Math.max(0, age); // before the report it was here or nearer the threshold: here will do
+    if (t > stop) return null;
+    const gone = v0 * t - (ROLLOUT_DECEL * t * t) / 2;
+    return { x: x0 + lane.ux * gone, y: y0 + lane.uy * gone, alt: lane.up, boost: fade(v0 - ROLLOUT_DECEL * t) };
+  };
+}
+
+// An aircraft that has just landed, still fast on the runway: the rest of its rollout, marked
+// `rollout`. `alt0` as for takeoff(), `heading` the way it points.
+function landedRoll(ac, pos, site, runways, alt0, heading) {
+  const speed = (ac.gs ?? 0) * KT;
+  if (!(speed > ROLLOUT_MS[1]) || heading == null) return null;
+  const lane = lanes(pos, site, runways).find((l) => l.cross < 40 && l.along > 0 && l.along < l.len && !(alt0 - l.up > 60) && l.facing(heading) > 0.94);
+  if (!lane) return null;
+  const roll = rollout(lane, pos.x, pos.y, speed);
+  return { ...lane, phase: 'landing on', rollout: true, at: roll };
+}
+
+// On final approach to a known runway: it follows the centreline down to touchdown, and rolls out,
 // instead of "flying" straight on past the airport.
-// shortcut: silent after touchdown; reverse thrust can be heard close to a runway and isn't modelled.
 function landing(ac, pos, alt0, vz, site, runways) {
   const speed = (ac.gs ?? 0) * KT;
   const lane = lanes(pos, site, runways)
@@ -156,34 +211,36 @@ function landing(ac, pos, alt0, vz, site, runways) {
     .sort((a, b) => a.cross - b.cross)[0]; // parallel runways: the one it is lined up with
   if (!lane) return null;
   const toGo = 300 - lane.along; // touchdown is about 300 m past the threshold
+  const roll = rollout(lane, pos.x + lane.ux * toGo, pos.y + lane.uy * toGo, speed);
   return {
     ...lane,
     phase: 'landing on',
     at: (age) => {
       const gone = speed * age;
-      if (gone >= toGo) return null;
+      if (gone >= toGo) return roll(age - toGo / speed);
       return { x: pos.x + lane.ux * gone, y: pos.y + lane.uy * gone, alt: lane.up + (alt0 - lane.up) * (1 - gone / toGo), boost: -4 };
     },
   };
 }
 
 // On a runway: it accelerates down the runway, lifts off, and climbs straight out. `alt0` is given for
-// aircraft that report themselves as flying, which only count if they are at runway level.
+// aircraft that report themselves as flying, which only count if they are at runway level. It may be
+// on the centreline up to LINE_UP_M before the runway's end. Above 15 m/s it is rolling; slower, it is
+// rolling only in the first half of the runway, facing down it, at ROLL_KT or more and faster than its
+// report before (`m.gaining`, motion.js). Otherwise it is lined up. `heading` is the way it points.
 // shortcut: an aircraft taxiing back along the runway looks lined up; needs taxiway data to tell apart.
-function takeoff(ac, pos, site, runways, alt0) {
+function takeoff(ac, pos, site, runways, alt0, m, heading) {
   const speed = (ac.gs ?? 0) * KT;
-  const rolling = speed > 15;
-  const heading = ac.track ?? ac.true_heading;
-  const lane = lanes(pos, site, runways).find(
-    (l) =>
-      l.cross < 40 &&
-      l.along > -50 &&
-      l.along < l.len &&
-      !(alt0 - l.up > 60) &&
-      (rolling
-        ? heading != null && l.facing(heading) > 0.94
-        : l.along < l.len / 2 && (heading == null || Math.abs(l.facing(heading)) > 0.94)), // stopped or slow: it will use the long way
-  );
+  const ahead = (l) => heading != null && l.facing(heading) > 0.94;
+  const starting = ac.gs >= ROLL_KT && m?.gaining;
+  let rolling = speed > 15;
+  const lane = lanes(pos, site, runways).find((l) => {
+    if (!(l.cross < 40 && l.along > -LINE_UP_M && l.along < l.len && !(alt0 - l.up > 60))) return false;
+    if (rolling) return ahead(l);
+    if (l.along >= l.len / 2) return false; // stopped or slow: it will use the long way
+    if (starting && ahead(l)) return (rolling = true);
+    return heading == null || Math.abs(l.facing(heading)) > 0.94;
+  });
   if (!lane) return null;
   const [accel, liftoff, climbSpeed, climbRate] = TAKEOFF[ac.category] ?? TAKEOFF_JET;
   const v0 = rolling ? speed : 0;
@@ -205,11 +262,15 @@ function takeoff(ac, pos, site, runways, alt0) {
 // Returns the first stretch of time this aircraft is predicted to be louder than `floor` at the site,
 // or null. Times are seconds from now (negative startS = already audible) and include how long the
 // sound takes to arrive. `runways` near the site let it recognise takeoffs and landings; `landed`
-// marks an aircraft that was on final approach a few minutes ago, so on a runway it is slowing down,
-// not about to depart. `trim` adds dB to a size category's source level, e.g. { A3: -4 }. `maxAge` is
-// how old a position may be: lost.js raises it to carry on an aircraft the feed has stopped reporting.
-// `motion` is how a helicopter has been moving (motion.js). Its window has `rough: true` when it starts
-// where the helicopter's heading is too unsure to stand behind.
+// marks an aircraft that was on final approach a few minutes ago, so on a runway it is rolling out or
+// slowing down, not about to depart. `trim` adds dB to a size category's source level, e.g. { A3: -4 }.
+// `maxAge` is how old a position may be: lost.js raises it to carry on an aircraft the feed has stopped
+// reporting.
+// `motion` is how the aircraft has been moving (motion.js): a helicopter's window has `rough: true` when
+// it starts where its heading is too unsure to stand behind.
+// On the ground, when its heading and track disagree and how it has moved cannot tell which is right,
+// both are tried and the window heard soonest is the one returned: a stale heading never hides a takeoff.
+// The rest of a rollout after landing is marked `rollout: true`: it is not an approach.
 //
 // The result also carries `path`: the whole predicted flight, audible or not, as one sample every 2 s:
 // { t, heardAt, x, y, alt, dist, db }. `t` is when the aircraft is there and `heardAt` when that sound
@@ -222,7 +283,12 @@ export function predict(ac, site, { loss, floor, runways = [], landed = false, t
   const pos = local(ac, site);
   let path;
   if (ac.alt_baro === 'ground') {
-    path = !landed && takeoff(ac, pos, site, runways);
+    const [way, other] = ways(ac, motion);
+    if (other != null) {
+      const heard = [way, other].map((h) => predict({ ...ac, true_heading: h, track: h }, site, { loss, floor, runways, landed, trim, maxAge, motion }));
+      return heard.filter(Boolean).sort((a, b) => a.startS - b.startS || b.peakDb - a.peakDb)[0] ?? null;
+    }
+    path = landed ? landedRoll(ac, pos, site, runways, undefined, way) : takeoff(ac, pos, site, runways, undefined, motion, way);
   } else {
     const altFt = ac.alt_geom ?? ac.alt_baro;
     if (typeof altFt !== 'number') return null;
@@ -230,8 +296,8 @@ export function predict(ac, site, { loss, floor, runways = [], landed = false, t
     const vz = ((ac.baro_rate ?? ac.geom_rate ?? 0) * FT) / 60;
     const final = landing(ac, pos, alt0, vz, site, runways);
     // Many aircraft keep reporting "flying" on the runway: at runway level and not climbing means rolling.
-    const rolling = !final && vz < 1.5 && takeoff(ac, pos, site, runways, alt0);
-    path = rolling ? !landed && rolling : final ?? (ac.category === 'A7' ? helicopter(ac, pos, alt0, vz, site, motion) : straight(ac, pos, alt0, vz, site));
+    const rolling = !final && vz < 1.5 && takeoff(ac, pos, site, runways, alt0, motion, headingOf(ac));
+    path = rolling ? (landed ? landedRoll(ac, pos, site, runways, alt0, headingOf(ac)) : rolling) : final ?? (ac.category === 'A7' ? helicopter(ac, pos, alt0, vz, site, motion) : straight(ac, pos, alt0, vz, site));
   }
   if (!path) return null;
 
@@ -283,6 +349,7 @@ export function predict(ac, site, { loss, floor, runways = [], landed = false, t
       airport: path.airport,
       runway: path.runway,
       opposite: path.opposite,
+      ...(path.rollout && { rollout: true }),
       margin: win.peakDb - floor,
       ...win,
       path: samples,
@@ -290,11 +357,15 @@ export function predict(ac, site, { loss, floor, runways = [], landed = false, t
   );
 }
 
-// For an aircraft still taxiing: the loudest it would be if it took off, or null. It is assumed to use
-// the runway end it is about to enter, else a direction seen in use (`inUse` holds "AIRPORT RUNWAY"),
-// else any runway at its airport.
+// For an aircraft still taxiing, or stopped at a holding point beside a runway end: the loudest it
+// would be if it took off, or null. It is assumed to use the runway end it is about to enter, else a
+// direction seen in use (`inUse` holds "AIRPORT RUNWAY"), else any runway at its airport.
+// shortcut: a holding point is told only by where it is (HOLDING_M); an aircraft parked that close to a
+// runway end is taken for one waiting to depart.
 export function ifDeparts(ac, site, opts, inUse = new Set()) {
-  if (ac.alt_baro !== 'ground' || !(ac.gs >= 5) || ac.lat == null) return null;
+  if (ac.alt_baro !== 'ground' || ac.lat == null) return null;
+  const holding = () => lanes(local(ac, site), site, opts.runways ?? []).some((l) => l.cross < HOLDING_M[0] && Math.abs(l.along) < HOLDING_M[1]);
+  if (!(ac.gs >= 5) && !holding()) return null;
   const ends = (opts.runways ?? [])
     .flatMap((rw) =>
       rw.ends.map((end, i) => ({

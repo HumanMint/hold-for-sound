@@ -4,24 +4,28 @@
 // (test/share.test.js).
 //
 // No sound is ever in a record, and nothing from before the switch went on. What comes nearest to
-// sound is the engine's own spectrogram around each aircraft, each aircraft-like noise and each mark
-// (`spec`, below): how loud each of 304 pitches was, 8 times a second. That cannot be played back and
+// sound is the engine's own spectrogram around each aircraft, each long aircraft-like noise and each
+// mark (`spec`, below): how loud each of 304 pitches was, 8 times a second. That cannot be played back and
 // is not an audio recording, but loud sounds near the microphone, speech among them, do show in
 // it, and the page says so beside its switch. Nothing finer may be added.
 //
-//   const share = createShare({ post, announce, changed, clock })
+//   const share = createShare({ post, announce, changed, trimmed, clock })
 //       post(text, signal)   sends one batch. A promise of the server's answer: { full: true } when
-//                       its log has no more room, anything else once the batch is dealt with. It rejects
-//                       when the batch did not get through, and the same batch is sent again next time.
+//                       its log has no more room, { spec: false } when it has none for spectrogram
+//                       (log.js), anything else once the batch is dealt with. It rejects when the batch
+//                       did not get through, and the same batch is sent again next time.
 //                       `signal` aborts when sharing is switched off: the request is to be cancelled.
 //       announce(id)    the session's id while sharing, or null: app.js names it in its feed requests
 //       changed()       `on` went false by itself, because the log is full
+//       trimmed()       `spec` went false: the log has no more room for spectrogram
 //   share.start()   share.stop()       the switch. Nothing is kept, recorded or sent before start().
 //   share.update(d)  share.status(d)  share.tune(d)  share.heard(d)     the page's events, every one
 //   share.mark(heard)                  the person hears an aircraft (true), or says it is quiet (false)
 //   share.flush()                      send what is waiting: every 20 s, after a mark, when the page is hidden.
 //                                      The spectrogram goes last, so the rest is not kept waiting behind it.
 //   share.on                           whether a session is being shared now
+//   share.spec                         whether its spectrogram still is: false for the rest of a session
+//                                      once the server has no more room for it. The rest goes on.
 //
 // The records, one JSON object each (README.md says how to read a log):
 //   site    { at, lat, lon, elevM, airports, env }    first, and again when the set or environment changes.
@@ -38,9 +42,13 @@
 //   listen  { at, rate }                  the microphone started, or started again, at this sample rate
 //   mic     { at, ready, signal, level, background, rise, noise, expected, heard, stale, bands }    once a second.
 //           The engine's status (hear.js) and coarse() of that second. `stale: true` on old flight data.
-//           No `bands` for a second whose audio began before the switch went on.
+//           No `bands` for a second whose audio began before the switch went on, and null or left out
+//           what rests on sound from before it: `signal` that second, `level` and `rise` for 6 s, `noise`
+//           and `heard` for 30 s.
 //   pass    an observation as the engine filed it (hear.js), with `lost: true` if its peak was due while
-//           the track was an estimate, and `stale: true` if the flight data was old: neither is learned from
+//           the track was an estimate, and `stale: true` if the flight data was old while it was heard,
+//           or went old and came back during it (listen-core.js): neither is learned from. Not sent if
+//           any of it was measured from sound in the 30 s before the switch went on, or earlier.
 //   mark    { at, heard }                 the person tapped "I hear an aircraft" (true) or "Quiet now" (false)
 //   spec    { from, at, rate, cols, bins, fmin, octave, lo, step, data }    up to 10 s of the engine's
 //           spectrogram, in a post of its own. `data` is base64 of `cols` columns of `bins` bytes, the
@@ -77,6 +85,14 @@ const OCTAVE = Math.round(BINS / Math.log2(FMAX / FMIN)); // 48 bins to the octa
 export const BEFORE_MS = 30_000; // kept from before something was first expected, heard or marked
 export const AFTER_MS = 30_000; // and after the last of it
 export const AFTER_MARK_MS = 60_000; // longer after a mark: that is when the page and the ears disagreed
+// Aircraft-like noise that no predicted aircraft explains (no transponder, or not an aircraft at all)
+// starts a stretch only once it has lasted NOISE_MS, and is kept from AROUND_MS before it began to
+// AROUND_MS after it, NOISE_HOUR_MS of it in any hour at most. Most such noise is short, and kept like
+// an aircraft it filled most of a night (287 of 420 min) and the session's room with it.
+export const NOISE_MS = 20_000;
+export const AROUND_MS = 10_000;
+export const NOISE_HOUR_MS = 15 * 60_000;
+const HOUR_MS = 3600_000;
 const RING = (BEFORE_MS / 1000) * COLUMNS_S; // columns remembered, in case they turn out to be wanted
 const CHUNK = 10 * COLUMNS_S; // columns to a `spec` record: 24 KB, 32 KB as base64
 const GAP_MS = 1500 / COLUMNS_S; // a column later than this after the one before it does not follow it
@@ -110,6 +126,9 @@ function poll(d, demo) {
 }
 
 const LEVEL_MS = 6000; // how far back the engine's level reaches (SMOOTH in hear.js)
+const LOOK_MS = 30_000; // and what it hears in the sound: tones are looked for over the last 30 s (LOOK in hear.js)
+// When a pass began to be measured: its first point, or for noise with none, its start.
+const measured = (o) => o.curve?.from ?? o.at - (o.seconds ?? 0) * 1000;
 const status = (at, d) => ({ k: 'status', at, state: d.state, until: whole(d.until), checking: d.checking || undefined, early: d.early || undefined, unsure: d.unsure ?? undefined });
 
 const mic = ({ status: s, columns, stale }) => ({
@@ -137,7 +156,7 @@ const newId = () => [...crypto.getRandomValues(new Uint8Array(8))].map((byte) =>
 
 // `room` is the most characters in one batch and `max` the most kept waiting while the network is
 // down: at a busy airport about 20 minutes of them, 4 MB.
-export function createShare({ post, announce = () => {}, changed = () => {}, clock = Date.now, id = newId, room = 30_000, max = 4_000_000 }) {
+export function createShare({ post, announce = () => {}, changed = () => {}, trimmed = () => {}, clock = Date.now, id = newId, room = 30_000, max = 4_000_000 }) {
   let session = null; // while sharing: { id, since, n, pending, sending, off }: `since` when it began, `pending` and
   // `sending` a batch not yet through and the sending of it, `off` what cancels that
   let queue = []; // records waiting to be sent, as { text, keep }
@@ -153,6 +172,7 @@ export function createShare({ post, announce = () => {}, changed = () => {}, clo
   // all of the bulk, then of the rest. `keep` marks what cannot be made again from anything else:
   // the set, the marks and the passes go last of all.
   function add(record, keep = false) {
+    if (record.at < session.since) return; // nothing from before the switch went on
     const text = JSON.stringify(record);
     if (record.k === 'spec') bulk.push(text);
     else queue.push({ text, keep });
@@ -162,14 +182,18 @@ export function createShare({ post, announce = () => {}, changed = () => {}, clo
     }
   }
 
-  // ---- The spectrogram around each aircraft and each mark ----
+  // ---- The spectrogram around each aircraft, each long noise and each mark ----
   // The last 30 s of columns are remembered, as bytes of this module's own: the engine goes on using
-  // its arrays. A stretch is wanted from 30 s before the page or the engine expects or hears anything
-  // until 30 s after the last of it, and from 30 s before a mark until a minute after. Wanted columns
-  // are sent 10 s at a time. Stretches that touch or overlap are one: a column is never sent twice,
-  // and one that follows the last column sent carries on that column's stretch.
+  // its arrays. A stretch is wanted from 30 s before the page or the engine expects or names an
+  // aircraft until 30 s after the last of it, from 30 s before a mark until a minute after, and around
+  // noise that no aircraft explains as NOISE_MS says. Wanted columns are sent 10 s at a time.
+  // Stretches that touch or overlap are one: a column is never sent twice, and one that follows the
+  // last column sent carries on that column's stretch.
   let ring = []; // { at, bytes }, the newest last
   let until = 0; // columns up to this moment are wanted
+  let noiseUntil = 0; // and up to this one, for unexplained noise, while the hour's allowance lasts
+  let noiseFrom = null; // when the unexplained noise going on now began
+  let spent = []; // `at` of each column sent in the last hour for unexplained noise alone
   let sentTo = 0; // `at` of the last column put in a record
   let stretch = 0; // when the stretch it belongs to began
   let chunk = []; // the columns of the record being filled
@@ -187,27 +211,46 @@ export function createShare({ post, announce = () => {}, changed = () => {}, clo
     sentTo = col.at;
     if (chunk.length === CHUNK) cut();
   }
-  function want(from, to) {
-    until = Math.max(until, to);
-    for (const col of ring) if (col.at >= from && col.at > sentTo) take(col);
+  // Whether a column may be sent for unexplained noise: the hour's allowance is not used up.
+  function spend(col) {
+    while (spent.length && spent[0] <= col.at - HOUR_MS) spent.shift();
+    if (spent.length >= (NOISE_HOUR_MS / 1000) * COLUMNS_S) return false;
+    spent.push(col.at);
+    return true;
+  }
+  function want(from, to, noise = false) {
+    if (!session.spec) return;
+    if (noise) noiseUntil = Math.max(noiseUntil, to);
+    else until = Math.max(until, to);
+    // A column remembered but not sent was not wanted for anything else.
+    for (const col of ring) if (col.at >= from && col.at > sentTo && (!noise || spend(col))) take(col);
   }
   function column({ at, db }) {
+    if (!session.spec) return;
     const col = { at: Math.round(at), bytes: Uint8ClampedArray.from(db, (v) => (v - LO) / STEP) }; // rounded, and held to 0 to 255
     ring.push(col);
     if (ring.length > RING) ring.shift();
-    if (col.at <= until) take(col);
+    if (col.at <= until || (col.at <= noiseUntil && spend(col))) take(col);
     else cut();
   }
+  // The server has no more room for spectrogram: none is kept or sent for the rest of the session.
+  function unspec() {
+    session.spec = false;
+    waiting -= bulk.reduce((sum, text) => sum + text.length, 0);
+    [bulk, ring, chunk] = [[], [], []];
+    trimmed();
+  }
 
+  // The set as it is now: when sharing begins, as of then.
   function place() {
     key = `${feed.site.lat},${feed.site.lon} ${feed.env}`;
-    add(site(feed), true);
+    add({ ...site(feed), at: Math.max(feed.at, session.since) }, true);
   }
 
   function end(full) {
     session.off.abort();
     session = null;
-    [queue, bulk, waiting, ring, chunk, until, sentTo] = [[], [], 0, [], [], 0, 0];
+    [queue, bulk, waiting, ring, chunk, until, noiseUntil, noiseFrom, spent, sentTo] = [[], [], 0, [], [], 0, 0, null, [], 0];
     announce(null);
     if (full) changed();
   }
@@ -228,6 +271,7 @@ export function createShare({ post, announce = () => {}, changed = () => {}, clo
         if (session !== s) return; // switched off while it was on its way
         if (answer?.full) return end(true);
         s.pending = null;
+        if (answer?.spec === false && s.spec) unspec();
       }
     } catch {
       // Not through: said nowhere, and tried again at the next flush.
@@ -236,10 +280,11 @@ export function createShare({ post, announce = () => {}, changed = () => {}, clo
 
   return {
     get on() { return !!session; },
+    get spec() { return !!session?.spec; },
 
     start() {
       if (session) end();
-      session = { id: id(), since: clock(), n: 0, pending: null, sending: null, off: new AbortController() };
+      session = { id: id(), since: clock(), n: 0, pending: null, sending: null, off: new AbortController(), spec: true };
       [key, micAt] = ['', 0];
       if (feed) place();
       if (banner) add(status(clock(), banner));
@@ -277,18 +322,29 @@ export function createShare({ post, announce = () => {}, changed = () => {}, clo
       const { at, expected, heard, noise } = d.status;
       if (!session || d.demo || at == null) return;
       if (at - micAt > 5000) add({ k: 'listen', at: Math.round(at), rate: d.rate });
+      if (at - micAt > 2000) noiseFrom = null; // the microphone stopped: noise after it is another noise
       micAt = at;
       const columns = d.columns.filter((col) => col.at - REACH_MS >= session.since);
-      // The engine's level is smoothed over the 6 s before, so the first seconds after the switch went
-      // on still carry sound from before it: their levels are not sent either.
-      // shortcut: the background is a long-run quiet level and still rests partly on earlier minutes.
+      // What the engine says rests on the sound before it too: whether there is any on the second, its
+      // level on the 6 s, and what it makes of the sound (noise, and the aircraft it names, by tones
+      // looked for over 30 s) on the 30 s. None of that is sent until it rests on sound from after the
+      // switch went on. Nor is a pass any part of which was measured earlier.
+      // shortcut: the background is a long-run quiet level and still rests partly on earlier minutes,
+      // and so do `rise` and a pass's `rise` and `floor`, which are measured against it.
+      const after = (ms) => at - ms >= session.since;
       const record = mic({ ...d, columns: columns.length === d.columns.length ? columns : [] });
-      if (at - LEVEL_MS < session.since) Object.assign(record, { level: null, rise: null });
+      if (!after(1000)) record.signal = null;
+      if (!after(LEVEL_MS)) Object.assign(record, { level: null, rise: null });
+      if (!after(LOOK_MS)) Object.assign(record, { noise: null, heard: undefined });
       add(record);
-      for (const o of d.observations) add({ k: 'pass', ...o, stale: d.stale || undefined }, true);
+      for (const o of d.observations) if (measured(o) - LOOK_MS >= session.since) add({ k: 'pass', ...o, stale: o.stale || d.stale || undefined }, true);
       // The page predicts an aircraft audible now (an estimate and a "cannot tell" count), or the
-      // engine expects one, has named one, or hears noise it takes for one.
-      if (expected.length || heard.length || noise || feed?.windows.some((w) => w.start <= at && w.end >= at)) want(at - BEFORE_MS, at + AFTER_MS);
+      // engine expects one, or has named one or the aircraft its noise could be.
+      const aircraft = expected.length || heard.some((h) => h.hex || h.candidates?.length) || feed?.windows.some((w) => w.start <= at && w.end >= at);
+      if (aircraft) want(at - BEFORE_MS, at + AFTER_MS);
+      // Or noise it takes for an aircraft, with none to explain it: once it has gone on for NOISE_MS.
+      noiseFrom = noise ? (noiseFrom ?? at - 1000) : null; // from the start of its first second
+      if (noise && !aircraft && at - noiseFrom >= NOISE_MS) want(noiseFrom - AROUND_MS, at + AROUND_MS, true);
       for (const col of columns) column(col);
     },
 

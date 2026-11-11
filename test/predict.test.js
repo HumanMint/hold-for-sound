@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ENVIRONMENTS, predict, ifDeparts, unseen } from '../public/predict.js';
+import { remember, motion } from '../public/motion.js';
+import { status } from '../public/status.js';
 
 const site = { lat: 34, lon: -118, elevM: 0 };
 const run = (ac, env, extra) => predict(ac, site, { ...ENVIRONMENTS[env], ...extra });
@@ -63,10 +65,69 @@ test('a jet on the runway is predicted before it leaves the ground', () => {
   assert.ok(idling.startS > 20, `quiet until it starts to roll, got ${idling.startS}`);
 });
 
+test('an aircraft lines up and starts its roll on the paved entry before the runway end', () => {
+  const m = (gaining) => ({ motion: { gaining } });
+  const entry = { ...jet, lon: lon(-5150), true_heading: 90 }; // 150 m before the end of 09, on its centreline
+  const lined09 = run({ ...entry, gs: 0 }, 'outdoors', { runways });
+  assert.deepEqual([lined09.phase, lined09.runway], ['lined up on', '09']);
+  assert.equal(run({ ...entry, gs: 0, lon: lon(-5250) }, 'outdoors', { runways }), null); // 250 m before: not yet on the runway
+  const lined = run({ ...entry, gs: 0 }, 'outdoors', { runways });
+
+  // 14 kt and faster than its report before: rolling, and heard sooner than the 20 s a lined-up one is given.
+  const starting = run({ ...entry, gs: 14 }, 'outdoors', { runways, ...m(true) });
+  assert.equal(starting.phase, 'taking off from');
+  assert.ok(starting.startS < lined.startS - 15, `${starting.startS} against ${lined.startS}`);
+  // Not speeding up, or slower than 10 kt: only lined up.
+  assert.equal(run({ ...entry, gs: 14 }, 'outdoors', { runways, ...m(false) }).phase, 'lined up on');
+  assert.equal(run({ ...entry, gs: 14 }, 'outdoors', { runways }).phase, 'lined up on');
+  assert.equal(run({ ...entry, gs: 8 }, 'outdoors', { runways, ...m(true) }).phase, 'lined up on');
+  // Speeding up while still turning onto the runway, or along a parallel taxiway 120 m off: no takeoff.
+  assert.equal(run({ ...entry, gs: 14, true_heading: 30 }, 'outdoors', { runways, ...m(true) }), null);
+  assert.equal(run({ ...entry, gs: 14, lat: 34 + 120 / 111195 }, 'outdoors', { runways, ...m(true) }), null);
+  // In the second half of 09, going east: not a roll on 09. Going that way it can only be taxiing back
+  // to the end of 27 (the shortcut in takeoff()), so it is lined up on 27, which departs away from the
+  // site: later and much quieter than a departure on 09, and no hold now.
+  const far = run({ ...entry, gs: 14, lon: lon(-3000) }, 'outdoors', { runways, ...m(true) });
+  assert.deepEqual([far.phase, far.runway], ['lined up on', '27']);
+  const on09 = run({ ...entry, gs: 0, lon: lon(-4500) }, 'outdoors', { runways });
+  assert.ok(far.startS > 20 && far.peakDb < on09.peakDb - 10, `${far.startS} s, ${far.peakDb} against ${on09.peakDb} dB`);
+});
+
+test('on the ground a stale heading or a lagging track never hides a takeoff', () => {
+  const way = (deg) => ({ motion: { gaining: false, way: deg } });
+  const at = (more, extra) => run({ ...jet, lon: lon(-4900), gs: 40, ...more }, 'outdoors', { runways, ...extra });
+  const phase = (w) => w && `${w.phase} ${w.runway}`;
+  // The track lags a turn onto the runway: the heading is the one to go by, and its movement agrees.
+  assert.equal(phase(at({ track: 180, true_heading: 90 })), 'taking off from 09');
+  assert.equal(phase(at({ track: 180, true_heading: 90 }, way(85))), 'taking off from 09');
+  // The heading is stale: moving east along 09 says the track is right.
+  assert.equal(phase(at({ track: 90, true_heading: 180 }, way(92))), 'taking off from 09');
+  // Nothing to tell them apart: the takeoff is kept.
+  assert.equal(phase(at({ track: 90, true_heading: 180 })), 'taking off from 09');
+  assert.equal(phase(at({ track: 90, true_heading: 180 }, way(135))), 'taking off from 09');
+  // Turning off south, its track left behind on the runway: the movement says the heading is right.
+  assert.equal(at({ track: 90, true_heading: 180 }, way(175)), null);
+  // No heading: the track, as before.
+  assert.equal(phase(at({ track: 90 })), 'taking off from 09');
+
+  // A jet rolling east down 09 at 60 kt, its heading stuck at 180, polled every 5 s as the page does:
+  // on every poll its climb-out over the site is due within half a minute, and the banner says so.
+  const history = new Map();
+  for (let s = 0; s <= 20; s += 5) {
+    const now = 1_800_000_000_000 + s * 1000;
+    const row = { ...jet, lon: lon(-4500 + 60 * 0.5144 * s), gs: 60, track: 90, true_heading: 180, seen_pos: 0 };
+    remember(history, [row], now);
+    const w = run(row, 'outdoors', { runways, motion: motion(history.get(row.hex)) });
+    assert.ok(phase(w) === 'taking off from 09' && w.startS < 30, `${s} s in`);
+    const told = status([{ ...w, start: now + w.startS * 1000, end: now + w.endS * 1000 }], now, now);
+    assert.deepEqual([told.state, told.until], ['soon', now + w.startS * 1000], `${s} s in`);
+  }
+});
+
 test('an aircraft at runway level that still reports itself as flying is treated as rolling', () => {
   const fast = { hex: 'ccc333', category: 'A3', lat: 34, lon: lon(-4000), alt_baro: 25, gs: 100, track: 90, baro_rate: 0 };
   assert.equal(run(fast, 'outdoors', { runways }).phase, 'taking off from');
-  assert.equal(run(fast, 'outdoors', { runways, landed: true }), null); // slowing down after landing
+  assert.equal(run(fast, 'outdoors', { runways, landed: true, floor: -Infinity }).phase, 'landing on'); // rolling out after landing
   assert.equal(run({ ...fast, alt_baro: 1500 }, 'outdoors', { runways }).phase, undefined); // really flying
 });
 
@@ -90,6 +151,31 @@ test('an aircraft on final lands instead of flying on past the airport', () => {
   assert.ok(w.peakAltFt > 300 && w.peakAltFt < 450, `about 380 ft over the site, got ${w.peakAltFt}`);
 });
 
+test('an aircraft that has just landed rolls out, quieter as it slows, and is quiet at taxiing speed', () => {
+  // 8 km short of runway 27, which it lands on 2 km from the site and rolls out away from it.
+  const final27 = { hex: 'bbb222', category: 'A3', lat: 34, lon: lon(6000), alt_baro: 1375, gs: 140, track: 270, baro_rate: -700 };
+  const w = run(final27, 'outdoors', { runways });
+  const touchdown = 8300 / (140 * 0.5144);
+  const rolling = w.path.filter((p) => p.t > touchdown);
+  assert.ok(rolling.length > 10 && rolling.every((p) => p.alt === 0), 'on the runway after touchdown');
+  assert.ok(rolling.at(-1).t < touchdown + 30, `down to taxiing speed within 30 s, got ${rolling.at(-1).t - touchdown}`);
+  assert.ok(rolling.every((p, i) => i === 0 || (p.db < rolling[i - 1].db && p.x < rolling[i - 1].x)), 'away from the site and quieter');
+  const heavy = run({ ...final27, category: 'A5' }, 'outdoors', { runways });
+  const down = heavy.path.find((p) => p.t > touchdown);
+  assert.ok(heavy.endS > down.heardAt + 4, `a heavy is heard for a while after touchdown: ${heavy.endS} against ${down.heardAt}`);
+
+  // Reported on the ground, just landed: the rest of its rollout. Slow, or not just landed, it is not one.
+  const ground = { ...jet, lon: lon(-2300), gs: 110, true_heading: 270 };
+  const rest = run(ground, 'outdoors', { runways, landed: true, floor: 30 });
+  assert.equal(`${rest.phase} ${rest.runway}`, 'landing on 27');
+  assert.ok(rest.startS < 0 && rest.endS > 10 && rest.endS < 30, `heard now and for some seconds, got ${rest.startS} to ${rest.endS}`);
+  assert.ok(rest.path.slice(0, 16).every((p) => p.x === rest.path[0].x), 'nothing is made up for before its report');
+  assert.equal(run({ ...ground, gs: 25 }, 'outdoors', { runways, landed: true, floor: -Infinity }), null);
+  assert.equal(run(ground, 'outdoors', { runways }).phase, 'taking off from');
+  // The rest of a rollout is marked, so the page does not take it for an approach (app.js).
+  assert.deepEqual([rest.rollout, w.rollout, run(ground, 'outdoors', { runways }).rollout], [true, undefined, undefined]);
+});
+
 test('a taxiing aircraft is flagged by its worst-case takeoff, narrowed by where it is and the runway in use', () => {
   const taxi = { ...jet, lat: 34.002, lon: lon(-3500), gs: 12, track: 90 };
   const opts = { ...ENVIRONMENTS.outdoors, runways };
@@ -101,6 +187,13 @@ test('a taxiing aircraft is flagged by its worst-case takeoff, narrowed by where
   assert.equal(ifDeparts(taxi, site, { ...opts, landed: true }), null);
   assert.equal(ifDeparts({ ...taxi, gs: 0 }, site, opts), null); // parked
   assert.equal(ifDeparts({ ...taxi, lat: 34.2 }, site, opts), null); // on the ground somewhere else
+
+  // Stopped at a holding point, 90 m off the centreline and 100 m before the end of 09: about to go.
+  const holding = { ...jet, lat: 34 + 90 / 111195, lon: lon(-5100), gs: 0 };
+  assert.equal(ifDeparts(holding, site, opts).runway, '09');
+  assert.equal(ifDeparts({ ...holding, lat: 34 + 140 / 111195 }, site, opts), null); // parked 140 m off
+  assert.equal(ifDeparts({ ...holding, lon: lon(-4500) }, site, opts), null); // beside the runway, away from its ends
+  assert.equal(ifDeparts(holding, site, { ...opts, landed: true }), null);
 
   const atThe27End = { ...taxi, lat: 34.001, lon: lon(-2100) };
   assert.equal(ifDeparts(atThe27End, site, opts).runway, '27'); // about to enter 27, so not the worst case

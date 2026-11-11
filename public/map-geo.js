@@ -66,6 +66,10 @@ export function sample(path, key, v) {
 // A correction to an aircraft's position bigger than this is not one: the replay looped, or the feed
 // mixed up two reports. Its new position and path are cut to, not eased into.
 export const CUT_M = 1500;
+// How far past an update the map may carry aircraft on, in seconds: until the data in it is too old to
+// trust. `at` is when the update came, `dataAt` when its data was measured (earlier when the answer was
+// kept a while), `staleMs` how long the page trusts data (from hfs:update).
+export const trustLeftS = (at, dataAt, staleMs) => Math.max(0, (dataAt + staleMs - at) / 1000);
 // How much of the way an easing has gone when `p` of its time has passed: quick to start, gentle to land.
 export const easeOut = (p) => 1 - (1 - Math.min(1, Math.max(0, p))) ** 2;
 
@@ -73,8 +77,11 @@ export const easeOut = (p) => 1 - (1 - Math.min(1, Math.max(0, p))) ** 2;
 // number fields. Each point of `to` starts where `from` was at the same `key` (its nearer end, beyond
 // it), and each point of `from` past the end of `to` closes in on that end, so a path that got shorter
 // draws in rather than being cut. Returns the path `k` of the way there (0 to 1), written into the
-// same points on every call, so a frame allocates nothing; at 1 it is `to` itself.
-export function morph(from, to, key) {
+// same points on every call, so a frame allocates nothing; at 1 it is `to` itself. `close` gives, by
+// field, a change too small to draw: when nothing `from` covers changes by more, it is `to` itself
+// from the start, and a stretch that only runs on past the old end (the newer prediction reaching a
+// few seconds further) appears with it.
+export function morph(from, to, key, close = {}) {
   if (!from.length || !to.length) return () => to;
   const fields = Object.keys(to[0]).filter((f) => typeof to[0][f] === 'number');
   let i = 0;
@@ -87,6 +94,8 @@ export function morph(from, to, key) {
   };
   const end = to.at(-1);
   const pairs = [...to.map((b) => [at(b[key]), b]), ...from.filter((a) => a[key] > end[key]).map((a) => [a, end])];
+  const last = from.at(-1)[key];
+  if (pairs.every(([a, b]) => b[key] > last || fields.every((f) => Math.abs(a[f] - b[f]) <= (close[f] ?? 0)))) return () => to; // nothing to ease
   const out = pairs.map(([, b]) => ({ ...b }));
   return (k) => {
     if (k >= 1) return to;
@@ -124,6 +133,37 @@ export function heard(path, floor, now) {
   }
   return runs.filter((r) => r.length > 1);
 }
+
+// heard() on `latest`, the newest prediction, drawn on `shown`, the path as drawn while it eases into
+// `latest`. Which stretches are still to be heard, where they begin and end, and how loud each point is
+// are the newest prediction's; each point only takes its place from `shown` at the same time `t`.
+export function heardOn(latest, shown, floor, now) {
+  const runs = heard(latest, floor, now);
+  if (shown === latest) return runs;
+  return runs.map((run) => run.map((q) => {
+    const p = sample(shown, 't', q.t);
+    return { ...q, x: p.x, y: p.y };
+  }));
+}
+
+// Whether what is heard at the set `now` seconds after the update comes from this path at or above `floor`.
+export function heardNow(path, floor, now) {
+  const p = sample(path, 'heardAt', now);
+  return !p.off && p.db >= floor;
+}
+
+// The map's two clocks, in seconds since the update, both stopped at `cap` once the data is too old to
+// carry on. `real` decides what is heard and when; `draw` places things, and stands still with reduced
+// motion, so aircraft step once per update while what is heard still keeps time.
+export function clocks(age, reduced, cap) {
+  const real = Math.min(age, cap);
+  return { real, draw: reduced ? 0 : real };
+}
+
+// Whether the map needs animation frames: only while something on it moves. Aircraft move along their
+// predicted paths (`tracks` of them) while the data is `fresh`, and a correction eases in for `ms`
+// after `eased`, the time the latest one began. With reduced motion nothing moves.
+export const moving = ({ reduced, fresh, tracks, eased, now, ms }) => !reduced && fresh && (tracks > 0 || now - eased < ms);
 
 // Where to draw something that may be outside the box: itself, or the point on the box's inner edge
 // that lies in its direction from the centre, with `off` set.

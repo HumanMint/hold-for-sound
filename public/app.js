@@ -1,11 +1,12 @@
 import { ENVIRONMENTS, CLASS_NAME, HORIZON_S, ifDeparts, unseen } from './predict.js';
 import { follow } from './lost.js';
+import { widen } from './widen.js';
 import { remember, motion } from './motion.js';
-import { status, steady } from './status.js';
+import { status, steady, staleAfter } from './status.js';
 import { locate, blocked, failed, WAIT_MS } from './locate.js';
 import { engine, shape, ENGINE_NAME } from './engine.js';
 import { details, where } from './details.js';
-import { feedResponse, retryIn } from './feed.js';
+import { feedResponse, retryIn, pacer } from './feed.js?v=3';
 
 const $ = (id) => document.getElementById(id);
 const form = $('setup');
@@ -29,8 +30,9 @@ let site = null; // { name, lat, lon, elevM, runways }
 let windows = []; // predicted audible windows, start/end in epoch ms
 let lastData = 0; // epoch ms the newest flight data describes: the last good poll, less the feed's own delay
 let polledAt = 0; // epoch ms that data arrived
+let every = 0; // seconds the server keeps this answer: 10 in public, a minute while the sky is quiet (cadence.js)
 let feedError = ''; // the error from the last poll, or '' if it worked
-let feedRetryAt = 0;
+const pace = pacer(); // when to ask for flight data again, and when the server said it may come back (feed.js)
 let holding = false;
 let shown = null; // the status on the banner, as status.js returned it
 const warned = new Map(); // hex -> epoch ms of its last heads-up
@@ -53,13 +55,15 @@ document.addEventListener('hfs:share', (e) => {
 
 // The other parts of the page (map.js, listen.js) are separate modules. They never import this file;
 // everything is passed as events on `document`:
-//   hfs:update  from here after every poll. detail: { at, dataAt, site, env, floor, trim, learned, aircraft, tracks, windows, taxiing }
+//   hfs:update  from here after every poll. detail: { at, dataAt, staleMs, site, env, floor, trim, learned, aircraft, tracks, windows, taxiing }
 //               `at` is the moment the paths are measured from. `dataAt` is how fresh the feed's data is
-//               (earlier than `at` when the feed is behind): nothing may look live once it is 20 s old.
+//               (earlier than `at` when the feed is behind): nothing may look live once it is `staleMs`
+//               old (20 s, or 80 s on a quiet sky's answer kept for a minute: staleAfter() in status.js).
 //               `aircraft` is the raw feed, `tracks` is predict() for every aircraft with no floor (so each
-//               has its whole `path`), `windows` are the audible ones with start/end in epoch ms.
-//               Both carry `seenAt`, the epoch ms of the position they rest on, and `lost: true` once
-//               that is 20 s old: the feed has lost the aircraft and this is an estimate. An aircraft
+//               has its whole `path`), `windows` are the audible ones with start/end in epoch ms
+//               (widened by `hfs:timing`). Both carry `seenAt`, the epoch ms of the position they rest
+//               on, and `lost: true` once the answer leaves it out or its position is 20 s older than the answer: this
+//               is an estimate. An aircraft
 //               the feed has dropped can still be in `tracks` and `windows`, with no row in `aircraft`
 //               (lost.js has the rules). Nothing may show an estimate as a reported position.
 //   hfs:status  from here when the banner changes. detail: { state, until, checking, early, unsure }:
@@ -83,6 +87,12 @@ document.addEventListener('hfs:share', (e) => {
 //               with `lost: true` if it was not learned from because its track was an estimate. `demo`
 //               marks the demo sound, `stale` old flight data, and `rate` is the sample rate.
 //               Nothing on the page acts on it: share.js records it when the user has sharing on.
+//   hfs:timing  from listen.js. detail: { offsets, lag, demo }: how many seconds after (+) or before (-)
+//               its track an aircraft was heard to pass, measured from the curve of its tones (hear.js
+//               `curves`). `offsets` maps hex to that aircraft's own, and `lag` is what the last few
+//               said, for the rest (null for nothing yet). poll() below widens each audible window by
+//               it (widen.js), to at most LATE_S: earlier starts when the sound came early, later ends
+//               when it came late, never the other way, and never a `lost` one. Not saved.
 //   hfs:share   from share.js. detail: { id, token }: the consented session being shared, or null. poll() below names it
 //               in its request, so the server keeps the feed it serves beside that session's log.
 const send = (name, detail) => document.dispatchEvent(new CustomEvent(name, { detail }));
@@ -93,6 +103,8 @@ const send = (name, detail) => document.dispatchEvent(new CustomEvent(name, { de
 // when the microphone has nothing to say any more (null while the slider is your own). An early floor
 // only stands in for your own level, so moving the slider under one sets that level too.
 let tuned = { floor: null, trim: {} };
+let timing = { offsets: {}, lag: null }; // how late the feed has been running here (hfs:timing)
+const widened = new Map(); // hex -> the last window widened by it, kept to its widened end (widen.js)
 let offset = 0;
 let manual = null;
 let real = null; // while a demo is tuning the page: { tuned, offset, manual, floor } from before it, to put back
@@ -111,6 +123,7 @@ function untune() {
   endDemo();
   if (manual != null) form.floor.value = manual;
   tuned = { floor: null, trim: {} };
+  timing = { offsets: {}, lag: null };
   offset = 0;
   manual = null;
 }
@@ -118,7 +131,7 @@ function untune() {
 const label = (w) => [w.flight || w.hex, w.desc || w.t, CLASS_NAME[w.category]].filter(Boolean).join(', ');
 const doing = (w) => `${w.phase ? `, ${w.phase} runway ${w.runway}` : ''}${w.lost ? ' (estimate: contact lost)' : ''}`;
 const loudness = (w) => (w.margin < 5 ? 'faint' : w.margin < 15 ? 'audible' : 'loud');
-const clock = () => new Date().toLocaleTimeString('en-GB'); // 19:04:31, the way time-of-day timecode reads
+const clock = (at = Date.now()) => new Date(at).toLocaleTimeString('en-GB'); // 19:04:31, the way time-of-day timecode reads
 const airportsOf = (list) => [...new Set(list.map((w) => w.airport))].join(' and ');
 
 // Takeoffs that would be heard here before the feed may show them (predict.js), for the set and
@@ -203,7 +216,7 @@ async function keepAwake() {
 document.addEventListener('visibilitychange', keepAwake);
 
 async function poll() {
-  if (!site || Date.now() < feedRetryAt) return;
+  if (!site || !pace.due(Date.now())) return;
   const place = site;
   try {
     const res = await fetch(`api/aircraft?lat=${site.lat}&lon=${site.lon}${shared}`, { signal: shared ? unshare.signal : undefined, headers: shareToken ? { 'x-hfs-share': shareToken } : {} });
@@ -212,8 +225,10 @@ async function poll() {
     if (site !== place) return; // a request from the previous location cannot populate the new one
     const now = Date.now();
     // The snapshot is `age` seconds old by the time it gets here (the feed's own delay, and the server
-    // shares one answer for up to 4 s, 10 s in public), so every position is that much older than it says.
+    // shares one answer for up to 4 s, 10 s in public, a minute in public while the sky is quiet), so
+    // every position is that much older than it says.
     const age = data.age ?? 0;
+    every = data.every ?? 0;
     for (const ac of data.ac) if (ac.seen_pos != null) ac.seen_pos += age;
     remember(moves, data.ac, now);
     // First poll: aircraft already on the ground may have just landed, so count them as arriving 3 min ago.
@@ -230,11 +245,13 @@ async function poll() {
     });
     // Every aircraft's whole path and which runway it is using, and the ones that will be heard. Both
     // include aircraft the feed has lost for as long as their last prediction still matters.
-    const { tracks, windows: audible } = follow(known, data.ac, now, site, opts);
-    windows = audible.map((w) => ({ ...w, start: now + w.startS * 1000, end: now + w.endS * 1000 })).sort((a, b) => a.start - b.start);
+    const { tracks, windows: audible } = follow(known, data.ac, now, site, opts, age);
+    // Where the microphone has heard the feed run early or late, the window opens earlier or closes
+    // later by as much, and a widened end stands once announced (widen.js).
+    windows = widen(audible, now, timing, widened);
     for (const use of tracks) {
       // An estimate counts here too: an aircraft lost on final that turns up on the runway has landed.
-      if (use.phase === 'landing on') arrivingAt.set(use.hex, now);
+      if (use.phase === 'landing on' && !use.rollout) arrivingAt.set(use.hex, now); // the approach, not the rollout after it
       if (use.runway && use.phase !== 'lined up on') {
         inUse.add(`${use.airport} ${use.runway}`);
         inUse.delete(`${use.airport} ${use.opposite}`);
@@ -248,13 +265,13 @@ async function poll() {
     lastData = now - age * 1000;
     polledAt = now;
     feedError = '';
-    feedRetryAt = 0;
-    send('hfs:update', { at: now, dataAt: lastData, site, env: form.env.value, floor: +form.floor.value, trim: tuned.trim, learned: tuned.floor, aircraft: data.ac, tracks, windows, taxiing });
-    $('feed').textContent = `${data.ac.length} aircraft within 30 nm from ${data.source}, at ${clock()}`;
+    pace.worked();
+    send('hfs:update', { at: now, dataAt: lastData, staleMs: staleAfter(every), site, env: form.env.value, floor: +form.floor.value, trim: tuned.trim, learned: tuned.floor, aircraft: data.ac, tracks, windows, taxiing });
+    $('feed').textContent = `${data.ac.length} aircraft within 30 nm from ${data.source}, at ${clock(lastData)}`;
   } catch (e) {
     if (site !== place) return;
     if (e.name === 'AbortError') return; // sharing went off while it was asking: the next poll asks again
-    feedRetryAt = Math.max(feedRetryAt, Date.now() + (e.retryAfter || 0) * 1000);
+    pace.failed(e.retryAfter, Date.now());
     feedError = e.name === 'FeedError' ? e.message : 'Unable to reach flight data. Retrying automatically.';
     $('feed').textContent = feedError;
   }
@@ -390,7 +407,7 @@ function render() {
   if (!site) return;
   placeBar();
   const now = Date.now();
-  shown = steady(status(windows, now, lastData), now, shown, polledAt);
+  shown = steady(status(windows, now, lastData, staleAfter(every)), now, shown, polledAt);
   const { state, until, current, next, checking, early, unsure } = shown;
   const said = { state, until: until ?? null, checking: !!checking, early: !!early, unsure: unsure?.hex ?? null };
   if (JSON.stringify(said) !== told) {
@@ -400,7 +417,7 @@ function render() {
   if (!state) {
     const waiting = !lastData && !feedError;
     // The request can work while the feed itself has fallen behind: that is not this device's fault.
-    const retry = feedRetryAt > now ? ` Retry in ${retryIn((feedRetryAt - now) / 1000)}.` : '';
+    const retry = pace.retryAt > now ? ` Retry in ${retryIn((pace.retryAt - now) / 1000)}.` : '';
     const why = (feedError || 'The feed is running behind.') + retry;
     if (feedError) $('feed').textContent = why;
     show(
@@ -434,6 +451,9 @@ function render() {
   // The airport comes last and the time early, so that a narrow screen cuts the name, not the meaning.
   const from = [...new Set(rolling.map((r) => r.airport))].slice(0, 2); // the soonest heard
   const fast = rolling.length ? `Heard ${mmss(rolling[0].leadS * 1000)} into a takeoff. ` : '';
+  // A quiet sky is asked about once a minute (cadence.js): a takeoff, or anything else new, can show
+  // that much later, so a clear spell says so.
+  const checked = every > 10 ? ` Checked every ${mmss(every * 1000)}.` : '';
 
   if (checking) {
     show('hold', 'Hold', early ? mmss(until - now) : '', 'checking it is quiet', `${mayDepart}${label(current.first)}${doing(current.first)}.`);
@@ -449,14 +469,14 @@ function render() {
     show('soon', 'Heads up', mmss(until - now), 'until an aircraft is audible', `${mayDepart}${about(next)}`);
   } else if (next) {
     const more = taxi ? 'or less: one may take off' : fast ? `or less: takeoffs at ${from.join(' and ')}` : 'until the next aircraft';
-    show('clear', 'Clear', mmss(until - now), more, `${mayDepart}${fast}Next: ${about(next)}`, !!(taxi || fast));
+    show('clear', 'Clear', mmss(until - now), more, `${mayDepart}${fast}Next: ${about(next)}${checked}`, !!(taxi || fast));
   } else if (taxi) {
     // No countdown: nobody can say how long it stays quiet with an aircraft about to depart.
-    show('clear', 'Clear', '', 'for now: one may take off', `${taxi}.`);
+    show('clear', 'Clear', '', 'for now: one may take off', `${taxi}.${checked}`);
   } else if (fast) {
-    show('clear', 'Clear', '', `until a takeoff at ${from.join(' or ')}`, fast.trim());
+    show('clear', 'Clear', '', `until a takeoff at ${from.join(' or ')}`, `${fast}${checked}`.trim());
   } else {
-    show('clear', 'Clear', `${HORIZON_S / 60}:00+`, 'nothing predicted', '');
+    show('clear', 'Clear', `${HORIZON_S / 60}:00+`, 'nothing predicted', checked.trim());
   }
 
   if (unsure && now - (warned.get(`lost ${unsure.hex}`) ?? 0) > 300_000) {
@@ -525,6 +545,8 @@ document.addEventListener('hfs:tune', (e) => {
   showSetup();
   poll();
 });
+// How late the feed has been running here. Taken up at the next poll, which works the windows out again.
+document.addEventListener('hfs:timing', (e) => (timing = { offsets: e.detail.offsets ?? {}, lag: e.detail.lag ?? null }));
 // Both lists: an aircraft that will be heard, or one that is taxiing.
 document.querySelector('.traffic').addEventListener('click', (e) => {
   const hex = e.target.closest('button')?.closest('li')?.dataset.hex; // the row itself, not its details
@@ -564,12 +586,12 @@ async function watch(mine) {
     const moved = !site || data.lat !== site.lat || data.lon !== site.lon;
     if (moved) {
       untune();
-      lastData = polledAt = listedAt = 0;
+      lastData = polledAt = listedAt = every = 0;
       shown = null;
       holding = false;
       windows = [];
       taxiing = [];
-      for (const map of [known, moves, arrivingAt, inUse, warned]) map.clear();
+      for (const map of [known, moves, arrivingAt, inUse, warned, widened]) map.clear();
       $('upcoming').replaceChildren();
       $('ground').replaceChildren();
       $('none').hidden = true;

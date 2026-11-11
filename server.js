@@ -18,6 +18,7 @@ import { createLog, read, body } from './log.js';
 import { activity } from './activity.js';
 import { consent } from './consent.js';
 import { retryAfter } from './public/feed.js';
+import { cadence, FAST_S, TAXIED_S } from './cadence.js';
 
 const PORT = process.env.PORT || 8787;
 const RADIUS_NM = 30;
@@ -91,15 +92,22 @@ setInterval(() => {
   forgetLookups();
   for (const limit of [places, searches, grantBytes, clientBytes]) limit.sweep();
   for (const [ip, hit] of callers) if (Date.now() - hit.at >= MIN) callers.delete(ip);
+  forgetAnswers();
 }, MIN).unref();
 // Everything in public/ is served, by file extension.
 const TYPES = { html: 'text/html', js: 'text/javascript', css: 'text/css', svg: 'image/svg+xml', png: 'image/png', woff2: 'font/woff2', json: 'application/json' };
 
-// Both feeds are free, need no key, and return the same readsb JSON. The second is the fallback.
+// Both feeds are free, need no key, and return the same readsb JSON. The second is the fallback, and
+// is not used in public. Each has its own pause: a provider that answers 429 is not asked again until
+// its delay has passed, in every mode, and the other is asked meanwhile. adsb.lol's budget pauses only
+// adsb.lol. adsb.lol's pause is saved with its budget.
+// shortcut: adsb.fi's pause is kept in memory only, so a restart asks it again.
 const FEEDS = [
-  (lat, lon) => `https://api.adsb.lol/v2/point/${lat}/${lon}/${RADIUS_NM}`,
-  (lat, lon) => `https://opendata.adsb.fi/api/v3/lat/${lat}/lon/${lon}/dist/${RADIUS_NM}`,
+  { url: (lat, lon) => `https://api.adsb.lol/v2/point/${lat}/${lon}/${RADIUS_NM}`, until: 0, quota: false, backoff: 60 },
+  { url: (lat, lon) => `https://opendata.adsb.fi/api/v3/lat/${lat}/lon/${lon}/dist/${RADIUS_NM}`, until: 0, quota: false, backoff: 60 },
 ];
+const LOL = FEEDS[0];
+const USED = PUBLIC_HOST ? [LOL] : FEEDS;
 
 async function getJson(url) {
   seen.count('upstream');
@@ -120,16 +128,19 @@ async function getJson(url) {
   return res.json();
 }
 
-let flightPausedUntil = 0;
-let flightQuota = false;
-let flightBackoff = 60; // seconds; repeated throttles back off to at most 15 minutes, or the provider's longer delay
-const flightLimited = () => Object.assign(new Error('Flight-data service is busy.'), {
-  status: 429, code: flightQuota ? 'flight_quota' : undefined, retryAfter: Math.max(1, Math.ceil((flightPausedUntil - Date.now()) / 1000)),
-});
+// A feed's `backoff` is in seconds: repeated throttles back off to at most 15 minutes, or the provider's
+// longer delay. Every feed in use paused: the answer counts down to the first to come back.
+const flightLimited = () => {
+  const next = USED.reduce((a, b) => (b.until < a.until ? b : a));
+  return Object.assign(new Error('Flight-data service is busy.'), {
+    status: 429, code: next.quota ? 'flight_quota' : undefined, retryAfter: Math.max(1, Math.ceil((next.until - Date.now()) / 1000)),
+  });
+};
 // adsb.lol's free allowance is spent by this whole server, key or no key (a key can be revoked for
-// repeated 429s). Requests are counted over the last day and the last 30 days, and it
-// pauses, as for an exhausted quota, before either limit is reached.
-const BUDGET = { day: Number(process.env.ADSB_LOL_DAY) || 900, month: Number(process.env.ADSB_LOL_MONTH) || 9000 };
+// repeated 429s). Requests are counted over the last day, 7 days and 30 days, and it
+// pauses, as for an exhausted quota, before any limit is reached.
+// A free key's allowance (seen 2026-11-11): 1,000 a day, 5,000 a week, 10,000 a month, 1,000 an hour, 120 a minute.
+const BUDGET = { day: Number(process.env.ADSB_LOL_DAY) || 900, week: Number(process.env.ADSB_LOL_WEEK) || 4500, month: Number(process.env.ADSB_LOL_MONTH) || 9000 };
 const spent = []; // epoch ms of each adsb.lol request in the last 30 days, oldest first
 // Those times and any provider pause are kept in STATE_DIR (or LOG_DIR), so a restart forgets neither:
 // times only, never a client address. Without either directory, in memory only. A request whose time
@@ -140,7 +151,7 @@ let unsaved = false; // a write failed: said once, and tried again by each reque
 function save() {
   if (!STATE) return true;
   try {
-    writeFileSync(`${STATE}.tmp`, JSON.stringify({ v: 1, spent, pausedUntil: flightPausedUntil, quota: flightQuota }), { mode: 0o600 });
+    writeFileSync(`${STATE}.tmp`, JSON.stringify({ v: 1, spent, pausedUntil: LOL.until, quota: LOL.quota }), { mode: 0o600 });
     renameSync(`${STATE}.tmp`, STATE); // whole or not at all
     if (unsaved) console.log('The adsb.lol budget is saved again.');
     unsaved = false;
@@ -158,9 +169,9 @@ if (STATE) {
     const time = (at) => Number.isFinite(at) && at >= 0;
     // Files from before `v` are version 1.
     if ((saved?.v ?? 1) !== 1 || !Array.isArray(saved.spent) || !saved.spent.every(time) || !time(saved.pausedUntil)) throw new Error('not a budget');
-    spent.push(...saved.spent.sort((a, b) => a - b).slice(-Math.max(BUDGET.day, BUDGET.month)));
-    flightPausedUntil = Math.min(saved.pausedUntil, Date.now() + 31 * DAY);
-    flightQuota = saved.quota === true;
+    spent.push(...saved.spent.sort((a, b) => a - b).slice(-Math.max(BUDGET.day, BUDGET.week, BUDGET.month)));
+    LOL.until = Math.min(saved.pausedUntil, Date.now() + 31 * DAY);
+    LOL.quota = saved.quota === true;
   } catch (e) {
     if (e.code !== 'ENOENT') {
       spent.push(...Array(BUDGET.day).fill(Date.now()));
@@ -178,55 +189,70 @@ function overBudget(now) {
   const today = first < 0 ? 0 : spent.length - first;
   const until = Math.max(
     today >= BUDGET.day ? spent.at(-BUDGET.day) + DAY : 0,
+    spent.length >= BUDGET.week ? spent.at(-BUDGET.week) + 7 * DAY : 0,
     spent.length >= BUDGET.month ? spent.at(-BUDGET.month) + 30 * DAY : 0,
   );
   return until > now ? until : 0;
 }
 
-async function fetchAircraft(lat, lon) {
-  // This runs inside the queue: jobs already waiting must also respect a new provider pause.
-  if (Date.now() < flightPausedUntil) throw flightLimited();
+// adsb.lol is asked only within its budget, and only once the time of asking is saved.
+function spend() {
   const until = overBudget(Date.now());
   if (until) {
-    flightQuota = true;
-    flightPausedUntil = until;
-    throw flightLimited();
+    Object.assign(LOL, { quota: true, until });
+    return false;
   }
   spent.push(Date.now());
-  if (!save()) {
-    spent.pop(); // not asked
-    throw Object.assign(new Error('The adsb.lol budget cannot be saved.'), { status: 503, retryAfter: 60 });
-  }
+  if (save()) return true;
+  spent.pop(); // not asked
+  throw Object.assign(new Error('The adsb.lol budget cannot be saved.'), { status: 503, retryAfter: 60 });
+}
+
+async function fetchAircraft(lat, lon) {
+  // This runs inside the queue: jobs already waiting must also respect a new provider pause.
   let error;
-  for (const feed of (PUBLIC_HOST ? FEEDS.slice(0, 1) : FEEDS)) {
+  for (const feed of USED) {
+    if (Date.now() < feed.until) continue;
     try {
-      const url = feed(lat, lon);
+      if (feed === LOL && !spend()) continue;
+      const url = feed.url(lat, lon);
       const data = await getJson(url);
       if (!Array.isArray(data?.ac)) throw new Error('Invalid flight-data response.');
       const { ac, now } = data;
-      flightBackoff = 60;
+      feed.backoff = 60;
       return { source: new URL(url).host, now, ac }; // now: when the feed took this snapshot, epoch ms
     } catch (e) {
-      if (PUBLIC_HOST && e.status === 429) {
-        flightQuota = !!e.quota;
-        flightPausedUntil = Date.now() + Math.max(flightBackoff, e.retryAfter) * 1000;
-        flightBackoff = Math.min(flightBackoff * 2, 900);
-        save();
-        throw flightLimited();
-      }
-      error = e;
+      if (e.status === 429) {
+        feed.quota = !!e.quota;
+        feed.until = Date.now() + Math.max(feed.backoff, e.retryAfter) * 1000;
+        feed.backoff = Math.min(feed.backoff * 2, 900);
+        if (feed === LOL) save();
+      } else error = e;
     }
   }
-  throw error;
+  // Every feed in use is paused, and none failed otherwise.
+  throw error ?? flightLimited();
 }
 
-// Several people may be watching different addresses. Each address costs one upstream request per 4 s
-// (10 s in public, where the page smooths between updates), and all of them share one line to the
-// feeds, so a public link can't be used to hammer a free service. In public the line also keeps
-// under adsb.lol's 20 requests in 30 s.
-const FRESH_MS = PUBLIC_HOST ? 10_000 : 4000;
+// Several people may be watching different addresses. Each address costs one upstream request per 4 s,
+// and all of them share one line to the feeds, so a public link can't be used to hammer a free service.
+// In public, where the page smooths between updates, it is one per 10 s while anything in the last
+// answer may matter soon, and one a minute while the sky is quiet (cadence.js): the server decides, so
+// no page can spend the day's budget faster. The line also keeps under adsb.lol's 20 requests in 30 s.
+const FRESH_MS = PUBLIC_HOST ? FAST_S * 1000 : 4000;
 const feedLine = queue(PUBLIC_HOST ? 1600 : 1000);
-const recent = new Map(); // "lat,lon" -> { at, body }, oldest first
+const recent = new Map(); // "lat,lon" -> { at, fresh, was, body }, oldest first: `was` is cadence()'s last answer
+// A place nobody asks about any more is forgotten, answer and all, a minute after its answer runs out:
+// time for the next poll of a page still watching it to find what cadence() said last. Ten minutes where
+// aircraft were on the ground near it, or one taxied, so a page that comes back within the taxi hold
+// finds the aircraft parked there already known (cadence.js). Forgetting sooner never hides anything:
+// an aircraft not known on the ground counts as a taxi.
+function forgetAnswers(now = Date.now()) {
+  for (const [key, hit] of recent) {
+    const ground = hit.was?.ground?.length || now - (hit.was?.taxiedAt ?? 0) < TAXIED_S * 1000;
+    if (now - hit.at > hit.fresh + (ground ? TAXIED_S * 1000 : MIN)) recent.delete(key);
+  }
+}
 
 // REPLAY=test/fixtures/lax.jsonl plays a recording of the feed on a loop instead of calling the live
 // services: the same traffic every time, for demos and for working on the page. Each line is { at, ac }.
@@ -246,11 +272,21 @@ function aircraft(lat, lon) {
   if (replay) return replayed();
   const key = `${lat},${lon}`;
   let hit = recent.get(key);
-  if (!hit || Date.now() - hit.at > FRESH_MS) {
+  if (!hit || Date.now() - hit.at > hit.fresh) {
     recent.delete(key);
     if (recent.size >= 200) recent.delete(recent.keys().next().value);
-    hit = { at: Date.now(), body: feedLine(() => fetchAircraft(lat, lon)) };
-    recent.set(key, hit);
+    // Until it is known to be quiet, and after a failure, an answer is kept for the short time.
+    const kept = { at: Date.now(), fresh: FRESH_MS, was: hit?.was };
+    kept.body = feedLine(() => fetchAircraft(lat, lon)).then((data) => {
+      if (PUBLIC_HOST) {
+        if (!runwayList) runwayTable(false); // for the next answer: until then this place may be beside a runway
+        const runways = runwayList && nearby(runwayList, +lat, +lon);
+        kept.was = cadence(data.ac, { lat: +lat, lon: +lon }, Date.now(), kept.was, runways);
+        kept.fresh = kept.was.every * 1000;
+      }
+      return { ...data, every: kept.fresh / 1000 }; // the page trusts a longer-kept answer longer (status.js)
+    });
+    recent.set(key, hit = kept);
   }
   return hit.body;
 }
@@ -279,29 +315,45 @@ async function everything(lat, lon) {
   return merge(feed, mine, { lat: +lat, lon: +lon, radiusNm: RADIUS_NM });
 }
 
-// Runway ends from OurAirports (public domain): fetched once, kept in memory.
-let runwayRows;
-async function runwaysNear(lat, lon) {
+// Runway ends from OurAirports (public domain): fetched once, kept in memory. In public it is fetched at
+// start, for the flight cadence (cadence.js), which takes every place as beside a runway until it has it.
+let runwayRows; // the fetch
+let runwayList = null; // its rows, once they have come
+let runwaysFailed = 0;
+// `retry`: try again at once after a failure, as a lookup does; the flight cadence waits 10 minutes.
+async function runwayTable(retry = true) {
   if (!runwayRows) {
+    if (!retry && Date.now() - runwaysFailed < 10 * MIN) return null;
     seen.count('upstream');
     runwayRows = fetch('https://davidmegginson.github.io/ourairports-data/runways.csv', { signal: AbortSignal.timeout(30000) })
-      .then((res) => res.text())
-      .then((csv) => csv.split('\n').slice(1).map((line) => line.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map((cell) => cell.replace(/"/g, ''))));
+      .then((res) => {
+        if (!res.ok) throw new Error(`runways: ${res.status}`);
+        return res.text();
+      })
+      .then((csv) => (runwayList = csv.split('\n').slice(1).map((line) => line.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map((cell) => cell.replace(/"/g, '')))));
   }
   try {
-    // Columns: 2 airport, 7 closed, then id/lat/lon/elevation ft for each end at 8-11 and 14-17. 0.25° is about 15 nm.
-    return (await runwayRows)
-      .filter((c) => c[7] === '0' && c[9] && c[15] && Math.hypot(c[9] - lat, (c[10] - lon) * Math.cos((lat * Math.PI) / 180)) < 0.25)
-      .map((c) => ({
-        airport: c[2],
-        elevM: c[11] || c[17] ? (c[11] || c[17]) * 0.3048 : undefined,
-        ends: [{ id: c[8], lat: +c[9], lon: +c[10] }, { id: c[14], lat: +c[15], lon: +c[16] }],
-      }));
+    return await runwayRows;
   } catch {
-    runwayRows = undefined; // retry on the next lookup; the page still works without runways
-    return [];
+    runwayRows = undefined; // the page still works without runways
+    runwaysFailed = Date.now();
+    return null;
   }
 }
+// Columns: 2 airport, 7 closed, then id/lat/lon/elevation ft for each end at 8-11 and 14-17. 0.25° is about 15 nm.
+const nearby = (rows, lat, lon) =>
+  rows
+    .filter((c) => c[7] === '0' && c[9] && c[15] && Math.hypot(c[9] - lat, (c[10] - lon) * Math.cos((lat * Math.PI) / 180)) < 0.25)
+    .map((c) => ({
+      airport: c[2],
+      elevM: c[11] || c[17] ? (c[11] || c[17]) * 0.3048 : undefined,
+      ends: [{ id: c[8], lat: +c[9], lon: +c[10] }, { id: c[14], lat: +c[15], lon: +c[16] }],
+    }));
+async function runwaysNear(lat, lon) {
+  const rows = await runwayTable();
+  return rows ? nearby(rows, lat, lon) : [];
+}
+if (PUBLIC_HOST && !replay) runwayTable(false);
 
 async function lookUp(q) {
   // Typed coordinates are used as they are, so a location that must stay private never goes to the

@@ -17,7 +17,7 @@
 import { BINS } from './hear.js';
 import { createCore } from './listen-core.js';
 import { easeOut, morph } from './map-geo.js';
-import { layout, LOW, heardOver, levelY, pitchY, shade, rowBins, ticks, levelAt, runs, held, series, place, untrimmed, createClock, say, PROBLEMS, explain, recap } from './listen-view.js';
+import { layout, LOW, curve, UNCHANGED, heardOver, levelY, pitchY, shade, rowBins, ticks, levelAt, runs, held, series, place, untrimmed, createClock, say, PROBLEMS, explain, recap, fittedLines, fitLabel, triedLines } from './listen-view.js';
 
 const box = document.getElementById('listen');
 const put = (el, text) => {
@@ -207,7 +207,9 @@ function build() {
       <li><i class="k-pred"></i>Predicted loudness</li>
       <li><i class="k-hold"></i>Hold</li>
       <li class="mic"><i class="k-pitch"></i>Predicted pitch</li>
+      <li class="mic"><i class="k-fit"></i>Fitted curve</li>
     </ul>
+    <ul class="tried" aria-label="Aircraft tried against the sound"></ul>
     <p class="about"></p>
     <div class="learned">
       <p class="last"></p>
@@ -225,7 +227,7 @@ function build() {
       <button type="button" class="demo quiet"></button>
     </div>`;
   const $ = (selector) => box.querySelector(selector);
-  ui = { say: $('.say'), head: $('.head'), body: $('.body'), chart: $('.chart'), canvas: $('canvas'), learned: $('.learned'), last: $('.last'), tuning: $('.tuning'), forget: $('.forget'), ask: $('.ask'), confirm: $('.confirm'), about: $('.about'), go: $('.go'), input: $('.input'), select: $('select'), again: $('.again'), demo: $('.demo'), heardAs: $('.k-heard-as') };
+  ui = { say: $('.say'), head: $('.head'), body: $('.body'), chart: $('.chart'), canvas: $('canvas'), learned: $('.learned'), last: $('.last'), tuning: $('.tuning'), forget: $('.forget'), ask: $('.ask'), confirm: $('.confirm'), about: $('.about'), go: $('.go'), input: $('.input'), select: $('select'), again: $('.again'), demo: $('.demo'), heardAs: $('.k-heard-as'), tried: $('.tried') };
   ctx = ui.canvas.getContext('2d');
 
   // Listening only ever starts here, when the button is pressed: never by itself on load.
@@ -281,6 +283,11 @@ function show() {
   ui.demo.hidden = source === 'mic';
   // Until a floor is learned, what the microphone measures cannot be placed against the warning level.
   put(ui.heardAs, feed.learned == null ? 'Heard loudness, over background' : 'Heard loudness');
+  // Which expected aircraft the engine tried against the sound, and what it made of each.
+  const lines = source && !problem && !core.stale() ? triedLines(core.ear.status(), name) : [];
+  while (ui.tried.children.length > lines.length) ui.tried.lastChild.remove();
+  while (ui.tried.children.length < lines.length) ui.tried.append(document.createElement('li'));
+  lines.forEach((line, i) => put(ui.tried.children[i], line));
   const t = core.learned();
   put(ui.last, core.last ? recap(core.last) : '');
   // The slider is only compared with what was learned once the page has that in effect.
@@ -299,12 +306,12 @@ let wasStale = false;
 let rowOf = new Map(); // which row each aircraft's name is on
 const widths = new Map(); // text -> its width on the canvas
 // A new forecast's curves ease out of the old ones over as long as the map takes over the same change.
-// Only the curves: the hold rail and the names' words are the newest forecast's at once.
+// Only the curves: the hold rail, which names show and how heavy each outline is are the newest forecast's at once.
 const EASE_MS = 1500;
 let since = 0; // when the newest forecast came
 const morphs = new WeakMap(); // a plane's `was` -> its easing into `pts`
 const eased = (plane, k) => {
-  if (!morphs.has(plane.was)) morphs.set(plane.was, morph(plane.was, plane.pts, 't'));
+  if (!morphs.has(plane.was)) morphs.set(plane.was, morph(plane.was, plane.pts, 't', UNCHANGED));
   return morphs.get(plane.was)(k);
 };
 const showing = () => view && !document.hidden && onScreen;
@@ -455,13 +462,11 @@ function draw() {
     if (plane.peak < floor + LOW) continue;
     const pts = along < 1 && plane.was ? eased(plane, along) : plane.pts;
     easing ||= pts !== plane.pts;
-    const lines = runs({ pts }, from, to, floor + LOW).map((run) => run.map((p) => [X(p.at), levelY(p.db - floor, level), p]));
-    const inView = (q) => q[2].at >= from && q[2].at <= to;
-    const top = lines.flat().reduce((most, q) => (inView(q) && q[2].db > (most?.[2].db ?? floor + LOW) ? q : most), null);
-    if (!top) continue;
-    // Its loudest moment is on the timeline, not still to slide in from the right or already gone off the left.
-    const peaked = !lines.flat().some((q) => !inView(q) && q[2].db > top[2].db);
-    shapes.push({ plane, lines, x: top[0], y: top[1], db: top[2].db, at: top[2].at, peaked, chosen: plane.hex === selected });
+    // Whether it shows, its weight and its name are the newest forecast's; only the outline and the pole ease.
+    const s = curve(plane, pts, from, to, floor);
+    if (!s) continue;
+    const lines = s.lines.map((run) => run.map((p) => [X(p.at), levelY(p.db - floor, level), p]));
+    shapes.push({ plane, lines, x: X(s.anchor.at), y: levelY(s.anchor.db - floor, level), loud: s.loud, at: s.at, peaked: s.peaked, chosen: plane.hex === selected });
   }
   shapes.sort((a, b) => a.chosen - b.chosen || a.at - b.at); // the selected aircraft is drawn last, on top
   const trace = (points, closed) => {
@@ -498,7 +503,7 @@ function draw() {
   c.globalAlpha = 1;
   for (const s of shapes) {
     // Thinner if it never reaches the warning level, and dotted while it is an estimate of an aircraft the feed has lost.
-    pen(s.chosen ? 2.5 : s.db < floor ? 1 : 1.5, s.chosen ? paint.accent : paint.ink, s.plane.lost ? [1, 4] : []);
+    pen(s.chosen ? 2.5 : s.loud ? 1.5 : 1, s.chosen ? paint.accent : paint.ink, s.plane.lost ? [1, 4] : []);
     for (const points of s.lines) trace(points), c.stroke();
   }
   c.restore();
@@ -540,6 +545,24 @@ function draw() {
         }
       }
     }
+    // The curves the engine fitted to what it heard, dotted, with what the fit says beside the top one.
+    for (const fit of core.fitted) {
+      if (fit.to < from) continue;
+      const lines = fittedLines(fit).map((line) => line.map(([at, hz]) => [X(at), pitchY(hz, pitch)]));
+      for (const line of lines) {
+        c.beginPath();
+        line.forEach(([x, y], i) => c[i ? 'lineTo' : 'moveTo'](x, y));
+        pen(3.5, paint.panel, [1, 3]);
+        c.stroke();
+        pen(2, fit.hex && fit.hex === selected ? paint.accent : paint.ink, [1, 3]);
+        c.stroke();
+      }
+      const top = lines.reduce((a, b) => (b.at(-1)[1] < a.at(-1)[1] ? b : a));
+      const [x, y] = top.at(-1);
+      const text = fitLabel(fit, now);
+      const w = widthOf(text, 500);
+      write(text, Math.min(x + 6 * k, W - w - 6 * k), Math.max(pitch.y + row / 2, y - row), paint.ink);
+    }
     c.restore();
   }
 
@@ -548,7 +571,7 @@ function draw() {
 
   // Names, each on a pole standing on the loudest moment of its aircraft's pass.
   const flags = shapes
-    .filter((s) => (s.db >= floor && s.peaked) || s.chosen || tones.has(s.plane.hex))
+    .filter((s) => (s.loud && s.peaked) || s.chosen || tones.has(s.plane.hex))
     .sort((a, b) => b.chosen - a.chosen || Math.abs(a.at - t0) - Math.abs(b.at - t0))
     .map((s) => {
       const text = s.plane.lost ? `${s.plane.name} (estimate)` : s.plane.name;

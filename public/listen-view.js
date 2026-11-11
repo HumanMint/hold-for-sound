@@ -3,6 +3,7 @@
 // says, and what it stores. Pure functions of plain values, shared by the page and the tests.
 
 import { BINS, FMIN } from './hear.js';
+import { flyby } from './doppler.js';
 import { CLASS_NAME } from './predict.js';
 import { sample, CUT_M } from './map-geo.js';
 
@@ -171,6 +172,33 @@ export function runs(plane, from, to, least = -Infinity) {
   return out;
 }
 
+// A new forecast that moves no point of the old one by more than this (ms, dB) is the same curve, a
+// fraction of a pixel away: morph() is given it, so the timeline does not ease, and redraw, for nothing.
+export const UNCHANGED = { t: 50, at: 50, db: 0.2 };
+
+// One aircraft's curve between two times, as the timeline draws it while `shown` (its points easing
+// into the newest forecast, by morph() in map-geo.js) may still be catching up with `plane.pts`.
+// Whether it shows at all, whether it reaches the warning level (`loud`), when its loudest moment is
+// (`at`) and whether that is on the timeline (`peaked`) are the newest forecast's. Only the outline
+// (`lines`) and `anchor`, where the name's pole stands, are the eased ones: the anchor is the eased
+// point that becomes the newest peak, kept between the two times, and its `db` may be below the chart.
+// Null when the newest forecast has nothing on the timeline above the bottom of the chart.
+export function curve(plane, shown, from, to, floor) {
+  const least = floor + LOW;
+  const inView = (p) => p.at >= from && p.at <= to;
+  const newest = runs(plane, from, to, least).flat();
+  const top = newest.reduce((most, p) => (inView(p) && p.db > (most?.db ?? least) ? p : most), null);
+  if (!top) return null;
+  const anchor = (shown !== plane.pts && shown[plane.pts.indexOf(top)]) || top;
+  return {
+    lines: shown === plane.pts ? runs(plane, from, to, least) : runs({ pts: shown }, from, to, least),
+    loud: top.db >= floor,
+    at: top.at,
+    peaked: !newest.some((p) => !inView(p) && p.db > top.db),
+    anchor: { at: Math.min(to, Math.max(from, anchor.at)), db: anchor.db },
+  };
+}
+
 // The stretches of time in which some aircraft is predicted at or above `floor`: [[from, to], ...]
 // in ms, in order. Like predict.js, a stretch runs from the first sample at the floor to the last.
 export function audible(planes, floor) {
@@ -213,6 +241,51 @@ export function held(planes, windows, at, floor, shown = []) {
 // leaves the lowest and strongest harmonics out of `tones`, and this puts a curve on those too. An
 // octave error in the note would show as curves with no sound under them.
 export const series = ({ hz, fundamental }) => (fundamental && hz.length ? Array.from({ length: Math.round(Math.max(...hz) / fundamental) }, (_, i) => (i + 1) * fundamental) : hz);
+
+// A curve the engine fitted (hear.js `curves`), as lines to draw over the spectrogram: one for each
+// emitted tone, [[at, hz], ...] every `step` ms from when its tones were first seen to the last.
+export function fittedLines(c, step = 250) {
+  const out = [];
+  for (const hz of c.hz) {
+    const line = [];
+    for (let at = c.from; at <= c.to + step / 2; at += step) line.push([Math.min(at, c.to), hz * flyby(Math.min(at, c.to), c)]);
+    out.push(line);
+  }
+  return out;
+}
+
+const signed = (s) => `${s > 0 ? '+' : s < 0 ? '−' : ''}${Math.abs(s).toFixed(1)}`;
+const KIND = { propeller: 'propeller?', jet: 'jet?' };
+// The values beside a fitted curve: speed, how near it came, what it sounds like, and how early (−)
+// or late (+) its aircraft passed against the feed. With no aircraft, about how long until it may
+// fade. All but the offset come from the fit alone, which can trade speed for distance, so they are
+// marked as estimates.
+export function fitLabel(c, now) {
+  const out = [`~${Math.round(c.speed)} m/s`, `~${Math.round(c.distance)} m`];
+  if (KIND[c.kind]) out.push(KIND[c.kind]);
+  if (c.hex && c.offset != null) out.push(`${signed(c.offset)} s`);
+  else if (c.until > now) out.push(`fade ~${Math.round((c.until - now) / 1000)} s`);
+  return out.join(' · ');
+}
+
+// Why an expected aircraft was or was not matched, one line each, loudest first: its name, how much
+// its pitch is bending, what the tone search made of it (hear.js `tried`) and, if a heard curve was
+// tried against it, what that made of it. At most `most` lines.
+const PITCH = { null: 'pitch matched', short: 'pitch: too little track', tone: 'pitch: no tone', steady: 'pitch: steady tone', rival: 'pitch: fits another', drift: 'pitch: drifting tone', weak: 'pitch: weak' };
+const CURVE = { partial: 'curve: not passed yet', shape: 'curve: wrong shape', distance: 'curve: wrong distance', ambiguous: 'curve: fits another' };
+export function triedLines(status, name, most = 4) {
+  const pitch = new Map(status.tried.map((t) => [t.hex, t.why]));
+  const curve = new Map();
+  for (const c of status.curves) for (const t of c.tried) if (!curve.has(t.hex) || t.why === null) curve.set(t.hex, t);
+  return status.expected.slice(0, most).map((e) => {
+    const parts = [name(e.hex)];
+    if (e.swing != null) parts.push(`${Math.round(e.swing)} % swing`);
+    if (pitch.has(e.hex)) parts.push(PITCH[pitch.get(e.hex)]);
+    const t = curve.get(e.hex);
+    if (t) parts.push(t.why === null ? `curve ${signed(t.offset)} s` : t.why === 'time' ? `curve: ${signed(t.offset)} s off` : CURVE[t.why]);
+    return parts.join(' · ');
+  });
+}
 
 // Which row each aircraft's name goes on so that none touch: Map hex -> row. `items` are
 // { hex, x, w } (left edge and width), most important first. `before` is the last answer: a name

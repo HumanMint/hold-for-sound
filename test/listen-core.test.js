@@ -101,6 +101,7 @@ function rig({ stored = null, ...page0 } = {}) {
   let now = START;
   let core;
   const sent = [];
+  const timings = []; // every `hfs:timing`, which app.js takes up at its next poll
   const pg = page(page0);
   const boot = () =>
     (core = createCore({
@@ -108,6 +109,7 @@ function rig({ stored = null, ...page0 } = {}) {
       save: (to) => (text = to),
       clock: () => now,
       send(name, detail) {
+        if (name === 'hfs:timing') return timings.push(detail);
         assert.equal(name, 'hfs:tune');
         sent.push(detail);
         pg.tune(detail);
@@ -120,6 +122,7 @@ function rig({ stored = null, ...page0 } = {}) {
   const r = {
     pg,
     sent,
+    timings,
     traffic: [],
     feed: (rows) => rows,
     get core() { return core; },
@@ -378,6 +381,40 @@ test('nothing is matched or learned while flight data is stale', () => {
   assert.deepEqual(gap.list(A, 'outdoors').map((o) => o.hex), ['jet002']);
 });
 
+test('the engine keeps listening, and its background, while flight data is stale', () => {
+  // The overnight session: data that went stale and fresh 43 times in 43 min. Each time the engine was
+  // replaced it spent 20 s learning the background, and once learned a takeoff as the background.
+  // Here the data goes stale 35 s in, while the jet is coming, and is back after it has passed.
+  const r = rig({ slider: 60 });
+  r.traffic = [jet];
+  r.poll();
+  r.core.begin('mic', RATE);
+  const voice = quiet();
+  r.listen(35, voice);
+  const ear = r.core.ear;
+  const before = ear.status().background;
+  assert.ok(ear.status().ready);
+  r.listen(10, voice, 30);
+  assert.ok(r.core.stale());
+  assert.equal(r.core.ear, ear, 'the same engine');
+  assert.deepEqual(ear.status().expected, [], 'it expects nobody on old data');
+  r.listen(30, voice, 30);
+  const loudest = Math.max(...r.core.heard.filter((h) => h.at > START + 45_000).map((h) => h.rise));
+  assert.ok(loudest >= 10, `the jet was heard over the background it already knew: +${loudest} dB`);
+  r.listen(40, voice);
+  assert.equal(r.core.ear, ear);
+  assert.ok(ear.status().ready, 'no 20 s of learning again');
+  assert.ok(Math.abs(ear.status().background - before) <= 2, `the background stayed ${before} dB, not the jet: ${ear.status().background}`);
+  assert.deepEqual(r.stored.sets ?? {}, {}, 'and the pass across the gap is not learned');
+
+  // The next aircraft is expected, heard and filed as usual.
+  r.traffic = [flying({ hex: 'jet002', over: 150 })];
+  r.listen(30, voice);
+  assert.ok(ear.status().expected.some((e) => e.hex === 'jet002'));
+  r.listen(60, voice);
+  assert.deepEqual(r.list(A, 'outdoors').map((o) => o.hex), ['jet002']);
+});
+
 // Finding 3.
 test('each address and environment gets its own learned level, or none', () => {
   const r = rig({ stored: saved([[A, 'outdoors', 48], [C, 'outdoors', 42], [A, 'indoors', 31]]) });
@@ -546,4 +583,64 @@ test('damaged saved settings do not stop the panel', () => {
     assert.deepEqual(r.sent, []);
     assert.equal(r.core.learned().floor, null);
   }
+});
+
+test('a feed running late is measured from the curve of an aircraft and sent to the page, and dropped when listening stops', () => {
+  const r = rig({ slider: 45 });
+  const prop = flying({ hex: 'a1b2c3', category: 'A1', track: 0, kt: 140, ft: 1000, over: 65 });
+  r.traffic = [prop];
+  r.feed = (rows, s) => [prop(s - 6)]; // the feed shows where it was 6 s before
+  r.poll();
+  r.core.begin('mic', RATE);
+  r.listen(110, createSynth({ sampleRate: RATE, background: 40 }));
+  const last = r.timings.at(-1);
+  assert.ok(Math.abs(last.offsets.a1b2c3 + 6) <= 1.5, `heard ${last.offsets.a1b2c3} s from its track`);
+  assert.equal(last.lag, null, 'one aircraft is not enough to say how late the feed runs for the rest');
+  assert.ok(r.timings.length <= 25, `sent ${r.timings.length} times in 110 s: only when it changes`);
+  assert.deepEqual(r.sent, [], 'and the warning level is left alone');
+  r.core.stop();
+  assert.deepEqual(r.timings.at(-1), { offsets: {}, lag: null });
+});
+
+test('no timing is learned from a curve heard while the data was old or the track an estimate', () => {
+  // The propeller aircraft of the test above, with its feed 6 s late.
+  const prop = flying({ hex: 'a1b2c3', category: 'A1', track: 0, kt: 140, ft: 1000, over: 65 });
+  const offsets = (r) => r.timings.flatMap((t) => Object.values(t.offsets));
+  // The flight data is old from 35 s to 60 s. The tones heard after it comes back are traced back
+  // into the gap until 90 s, and say nothing until then; the ones heard wholly after it are measured.
+  const gap = rig({ slider: 45 });
+  gap.traffic = [prop];
+  gap.feed = (rows, s) => [prop(s - 6)];
+  gap.poll();
+  gap.core.begin('mic', RATE);
+  const voice = createSynth({ sampleRate: RATE, background: 40 });
+  gap.listen(35, voice);
+  gap.listen(25, voice, 30);
+  gap.listen(25, voice);
+  assert.deepEqual(offsets(gap), [], 'no offset from tones that span the gap');
+  gap.listen(25, voice);
+  assert.ok(offsets(gap).length && offsets(gap).every((o) => Math.abs(o + 6) <= 1.5), `then measured as usual: ${offsets(gap)}`);
+
+  // The feed loses it at 15 s, so its track is an estimate from 35 s, and has it again at 80 s.
+  const lost = rig({ slider: 45 });
+  lost.traffic = [prop];
+  lost.feed = (rows, s) => (s >= 15 && s < 80 ? [{ ...prop(9), seen_pos: s - 15 }] : [prop(s - 6)]);
+  lost.poll();
+  lost.core.begin('mic', RATE);
+  lost.listen(105, createSynth({ sampleRate: RATE, background: 40 }));
+  assert.deepEqual(offsets(lost), [], 'no offset from tones heard while it was an estimate');
+});
+
+test('the newest fit of each curve is kept to draw, and one with no aircraft gives way to its aircraft', () => {
+  const r = rig({ slider: 45 });
+  const prop = flying({ hex: 'a1b2c3', category: 'A1', track: 0, kt: 140, ft: 1000, over: 65 });
+  r.traffic = [prop];
+  r.poll();
+  r.core.begin('mic', RATE);
+  r.listen(110, createSynth({ sampleRate: RATE, background: 40 }));
+  const mine = r.core.fitted.filter((f) => f.hex === 'a1b2c3');
+  assert.equal(mine.length, 1, 'one fit for its aircraft, the newest');
+  assert.ok(!r.core.fitted.some((f) => !f.hex && f.from <= mine[0].to && mine[0].from <= f.to), 'and none with no aircraft over it');
+  r.core.stop();
+  assert.deepEqual(r.core.fitted, []);
 });
