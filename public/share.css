@@ -1,0 +1,58 @@
+/* Sharing (share.js): the switch at the bottom of the page, above the fine print, and the two marks
+   a person taps to say what they hear. Colours and type are theme.css's names. None of this is on
+   the page unless the server keeps a log. */
+
+.share { display: grid; gap: 0.125rem; margin-bottom: 0.5rem; }
+.share label { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; font-size: var(--text-m); font-weight: 700; color: var(--ink); cursor: pointer; }
+.share p { font-size: var(--text-s); color: var(--ink-2); text-wrap: pretty; }
+/* A switch: the knob's side and the filled track say on, not colour alone. */
+.share input { appearance: none; flex: none; width: 2.75rem; height: 1.5rem; margin: 0; padding: 0.125rem; border: 1px solid var(--ink-2); border-radius: 1rem; cursor: pointer; }
+.share input::before { content: ''; display: block; height: 100%; aspect-ratio: 1; background: var(--ink-2); border-radius: 50%; }
+.share input:checked { background: var(--ink); border-color: var(--ink); }
+.share input:checked::before { margin-left: auto; background: var(--panel); }
+
+/* The marks are laid over the page in a place that is theirs alone, so that showing them moves
+   nothing: nothing else may be put there. A tap fills the button for a moment. */
+#marks { display: flex; gap: 0.5rem; }
+#marks[hidden] { display: none; }
+#marks button { position: relative; min-width: 0; padding: 0 0.875rem; font: inherit; font-size: var(--text-s); font-weight: 700; white-space: nowrap; color: var(--ink); background: var(--panel); border: 1px solid var(--ink-2); border-radius: var(--radius); cursor: pointer; touch-action: manipulation; }
+#marks button[data-done] { color: var(--bg); background: var(--ink); border-color: var(--ink); }
+#marks [role='status'] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* A phone: along the bottom edge, under the thumb, and still there when the page is scrolled. The
+   page ends that much lower, so its last lines can be scrolled clear of them. */
+@media (max-width: 45.99rem) {
+  #marks { position: fixed; inset: auto 0 0; z-index: 3; padding: 0.5rem var(--right) max(0.5rem, env(safe-area-inset-bottom, 0px)) var(--left); background: var(--bg); border-top: 1px solid var(--line); }
+  #marks button { flex: 1; height: 3rem; }
+  body:has(#marks:not([hidden])) { padding-bottom: calc(6rem + env(safe-area-inset-bottom, 0px)); }
+}
+
+/* A tablet: in the top line, between the summary of the setup and its "Change". The summary gives up
+   that room for as long as sharing is offered, switched on or not, so the switch moves nothing
+   either. The buttons are a little shorter than the line, and take a finger over all of its height. */
+@media (min-width: 46rem) {
+  header:has(#marks) { position: relative; }
+  header:has(#marks) .set-summary { margin-right: 18rem; } /* the two buttons, and a gap */
+  #marks { position: absolute; top: 0; right: 6rem; height: 2.75rem; align-items: center; } /* "Change" is right of them */
+  #marks button { height: 2.75rem; padding-inline: 0.625rem; }
+  #marks button::after { content: ''; position: absolute; inset: -0.3125rem -0.25rem; }
+}
+
+/* Native dialog keeps keyboard focus inside the confirmation and supports Escape. */
+.share-confirm { width: min(36rem, calc(100% - 2rem)); font-size: var(--text-s); }
+.share-confirm h2 { font-size: 1.5rem; line-height: 1.2; border: 0; padding: 0; }
+.share-confirm h2:focus { outline: none; }
+.share-confirm > * + * { margin-top: 0.75rem; }
+.share-confirm ul { padding-left: 1.125rem; }
+.share-confirm li + li { margin-top: 0.5rem; }
+.share-acknowledgment { font-weight: 700; }
+.share-confirm form { display: flex; justify-content: flex-end; gap: 0.5rem; max-width: none; margin: 0.875rem 0 0; padding: 0; border: 0; background: none; }
+.share-confirm button { flex: 1; }
+.share-confirm button.quiet { min-width: 0; }
+
+@media (min-width: 46rem) and (max-width: 69.99rem) {
+  header:has(#marks) .set-summary { margin-right: 0; }
+}
+
+/* The session's id while sharing: a value to quote when asking for its deletion. */
+.share .share-id span { font-family: var(--font-num); font-variant-numeric: tabular-nums; user-select: all; }

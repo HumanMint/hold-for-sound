@@ -1,0 +1,431 @@
+/* The page: layout, the status banner and the slim bar that stands in for it, the setup form, the
+   aircraft lists, and the log. Colours and type come from theme.css. The map and the listening panel
+   style their own insides (map.css, listen.css); this file only gives them a box.
+
+   The screen this is laid out for is a tablet on the sound cart: see "The first screen" at the end.
+   A phone gets one scrolling column, and a laptop the tablet's arrangement with the log beside it. */
+
+:root {
+  --head: 2.75rem; /* the top line: one row, tall enough for a finger */
+  --bar: 3rem; /* the slim status bar */
+  --page: 84rem; /* the widest the page gets */
+  /* The page's side margins: the usual gap, or more where a screen's corners or notch need it. */
+  --left: max(var(--gap), env(safe-area-inset-left, 0px));
+  --right: max(var(--gap), env(safe-area-inset-right, 0px));
+  --top: env(safe-area-inset-top, 0px);
+  scrollbar-gutter: stable;
+  scroll-padding-top: calc(var(--top) + var(--bar) + 0.5rem); /* nothing scrolled to ends up under the slim bar */
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: var(--top) var(--right) max(2rem, env(safe-area-inset-bottom, 0px)) var(--left);
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 var(--text-m) / 1.5 var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  -webkit-text-size-adjust: 100%;
+}
+header, main, footer { max-width: var(--page); margin-inline: auto; }
+h1, h2, h3, p, ol, ul, fieldset { margin: 0; padding: 0; }
+a { color: var(--accent); }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+/* Setup lives in a native modal: opening it never changes the dashboard's geometry. */
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.5rem; min-height: var(--head); }
+h1 { font: 800 1.25rem / 1 var(--font); white-space: nowrap; }
+.set-summary { flex: 1; min-width: 0; display: flex; gap: 0.25rem 1rem; align-items: baseline; font-size: var(--text-s); }
+#where { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+#levels { color: var(--ink-2); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+button { min-height: 2.75rem; padding: 0.625rem 1rem; font: inherit; line-height: 1.25; font-weight: 600; color: var(--bg); background: var(--ink); border: 1px solid transparent; border-radius: var(--radius); cursor: pointer; touch-action: manipulation; }
+button.quiet { color: var(--ink); background: none; border-color: var(--line); }
+#change { flex: none; font-size: var(--text-s); }
+button:hover { filter: brightness(0.92); }
+button[aria-disabled='true'] { border-style: dashed; cursor: progress; }
+
+dialog { width: min(56rem, calc(100% - 2rem)); max-height: calc(100vh - 2rem); max-height: calc(100dvh - 2rem); overflow: auto; overscroll-behavior: contain; margin: auto; padding: 1.75rem; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 0.75rem; font: inherit; }
+dialog::backdrop { background: var(--bg); opacity: 0.9; }
+body:has(dialog[open]) { overflow: hidden; }
+.dialog-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1.75rem; }
+.dialog-heading h2 { border: 0; padding: 0; margin-top: 0.25rem; font-size: 1.75rem; font-weight: 700; line-height: 1.2; letter-spacing: -0.025em; }
+.eyebrow { font-size: var(--text-s); color: var(--ink-2); }
+#close-settings { font-size: var(--text-s); }
+#setup { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 1.75rem; }
+.setup-location { grid-column: 1; grid-row: 1; }
+.setup-location, .setup-sound { min-width: 0; display: flex; flex-direction: column; gap: 1rem; }
+.setup-sound { grid-column: 2; grid-row: 1; border-left: 1px solid var(--line); padding-left: 1.75rem; }
+#setup label, legend { font-size: var(--text-s); font-weight: 600; }
+.lookup { display: grid; gap: 0.75rem; margin-top: -0.5rem; }
+input[type='text'] { width: 100%; min-width: 0; min-height: 3rem; padding: 0.625rem 0.75rem; font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--ink-2); border-radius: var(--radius); }
+.here { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem 0.75rem; }
+.here button { font-size: var(--text-s); }
+.here p { font-size: var(--text-s); color: var(--ink-2); }
+#setup-title:focus { outline: none; }
+.examples > div { display: grid; gap: 0.5rem; }
+.examples button.quiet { width: 100%; padding: 0.625rem 0.75rem; text-align: left; font-size: var(--text-s); }
+.examples button span { display: block; margin-top: 0.125rem; color: var(--ink-2); font-weight: 400; }
+#site { color: var(--ink-2); font-size: var(--text-s); overflow-wrap: anywhere; }
+#site a { display: inline-block; padding-block: 0.5rem; }
+#site:empty { display: none; }
+fieldset { border: 0; min-width: 0; }
+legend { padding: 0; margin-bottom: 0.625rem; }
+.choices { display: grid; gap: 0.5rem; }
+.choices label { position: relative; display: block; min-height: 3rem; padding: 0.625rem 0.75rem 0.625rem 2.5rem; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; }
+.choices input { position: absolute; left: 0.75rem; top: 0.875rem; margin: 0; width: 1rem; height: 1rem; accent-color: var(--accent); }
+.choices label span { display: block; font-weight: 400; color: var(--ink-2); }
+.choices label:has(:checked) { border-color: var(--accent); outline: 1px solid var(--accent); }
+.choices label:has(:focus-visible) { outline: 3px solid var(--accent); outline-offset: 2px; }
+input[type='range'] { display: block; width: 100%; min-height: 2.75rem; margin: 0; accent-color: var(--accent); }
+.ends { display: flex; justify-content: space-between; gap: 1rem; margin-top: -1rem; font-size: var(--text-s); color: var(--ink-2); }
+.ends span + span { text-align: right; }
+#floorBy { font-size: var(--text-s); color: var(--ink-2); }
+#floorBy:empty { display: none; }
+@media (max-width: 47.99rem) {
+  dialog { padding: 1.25rem; }
+  .dialog-heading { margin-bottom: 1.5rem; }
+  .dialog-heading h2 { font-size: 1.5rem; }
+  #setup { grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }
+  .setup-location, .setup-sound { grid-column: auto; grid-row: auto; }
+  .setup-sound { border-left: 0; border-top: 1px solid var(--line); padding: 1.25rem 0 0; }
+}
+@media (max-width: 45.99rem) {
+  :root { scrollbar-gutter: auto; }
+  .setup-dialog { width: 100%; max-width: none; margin: 0; max-height: 100vh; max-height: 100dvh; height: 100dvh; border: 0; border-radius: 0; padding: 1.25rem; }
+  .setup-dialog .dialog-heading { position: sticky; top: -1.25rem; z-index: 1; background: var(--panel); padding-block: 1.25rem; margin-top: -1.25rem; }
+  header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.375rem 0.75rem; padding-block: 0.5rem 0.75rem; }
+  .set-summary { grid-row: 2; grid-column: 1 / -1; flex-wrap: wrap; gap: 0.125rem 0.75rem; }
+  #levels { flex-basis: 100%; }
+  #change { grid-column: 2; grid-row: 1; }
+}
+
+/* A phone: one column, in the order a mixer needs it. */
+main { display: flex; flex-direction: column; gap: var(--gap); }
+
+/* The status is the page: a mark, a word, and a countdown, read from across the cart. The mark's
+   shape and the word change with the state, so it never rests on colour alone. Its type is sized
+   from its own box (see theme.css), which is why it is a container. */
+#status {
+  container-type: inline-size;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem 2.5rem;
+  padding: 1rem 1.125rem 1.125rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+:is(#status, #bar).clear { color: var(--on-fill-clear); background: var(--fill-clear); border-color: transparent; }
+:is(#status, #bar).soon { color: var(--on-fill-soon); background: var(--fill-soon); border-color: transparent; }
+:is(#status, #bar).hold { color: var(--on-fill-hold); background: var(--fill-hold); border-color: transparent; }
+/* No data: striped like a clapper stick across the top, and no colour that could pass for clear. */
+:is(#status, #bar)[data-stale] {
+  background-image: repeating-linear-gradient(-45deg, var(--ink) 0 0.625rem, transparent 0 1.25rem);
+  background-size: 100% 0.875rem;
+  background-repeat: no-repeat;
+}
+/* The stripe lies in the banner's own top padding, so losing the flight data does not change its height. */
+.readout { display: flex; flex-direction: column; font-family: var(--font); font-weight: 800; line-height: 0.9; }
+.state { display: flex; align-items: center; gap: 0.22em; font-size: var(--text-word); white-space: nowrap; }
+#count { font-family: var(--font-num); font-size: var(--text-count); margin-top: 0.06em; }
+#count:empty { display: none; }
+/* A hold that is being checked has no countdown for a few seconds. Its line is kept, so that nothing
+   jumps at the moment everyone is watching for Clear. */
+.hold #count:empty { display: block; min-height: 0.9em; }
+.notes { flex: 1 1 16rem; }
+#what { font-size: var(--text-l); font-weight: 700; line-height: 1.2; }
+#then { margin-top: 0.25rem; text-wrap: pretty; }
+#then:empty { display: none; }
+/* Where there is no countdown to come (no data, or clear with an aircraft taxiing), the word is the
+   readout, so it is larger: as large as "No data" has room for. */
+#status:is(.clear, [data-stale]) .readout:has(#count:empty) .state { font-size: min(var(--text-count) * 0.8, 22cqi); }
+/* On a phone held upright the banner's height comes from its type and never from its words. It sits
+   above the map in a page that scrolls, and a banner that grew and shrank with its sentences moved
+   the map under the reader's thumb every few seconds. So the readout always has the same lines, and
+   the words under it always have the same room: two lines in large type and two of detail, each
+   ending in an ellipsis past that. (Wider screens lay the banner out in a row, or fit it to the screen.) */
+@media (max-width: 45.99rem) {
+  #status:is(.clear, .soon, .hold, [data-stale]) :is(#what, #then) { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; -webkit-line-clamp: 2; line-clamp: 2; }
+  /* The word and the countdown share one line, the same size whether or not there is a countdown, so
+     a countdown that comes and goes leaves no empty band. */
+  @container (min-width: 15rem) {
+    #status:is(.clear, .soon, .hold, [data-stale]) .readout { height: var(--text-line); flex-direction: row; align-items: baseline; gap: 0 calc(var(--text-line) * 0.3); line-height: 1; }
+    .state, #count, #status:is(.clear, [data-stale]) .readout:has(#count:empty) .state { font-size: var(--text-line); }
+    .state { align-items: baseline; }
+    #count { margin-top: 0; }
+    /* Two lines for the line in large type: one cut "an aircraft may still be audible" before its last word. */
+    #status:is(.clear, .soon, .hold, [data-stale]) .notes { min-height: calc(var(--text-l) * 2.4 + 0.25rem + var(--text-m) * 2.8); }
+  }
+  /* Narrower than 15rem (large text) that line would be less than half again as large as the words
+     under it, so the countdown goes under the word, and the line in large type gets two lines,
+     since one holds only a word or two. */
+  @container (width < 15rem) {
+    #status:is(.clear, .soon, .hold, [data-stale]) .readout { min-height: calc(var(--text-word) * 0.9 + var(--text-count) * 0.96); }
+    #status:is(.clear, .soon, .hold, [data-stale]) .notes { min-height: calc(var(--text-l) * 2.4 + 0.25rem + var(--text-m) * 2.8); }
+  }
+}
+/* Before an address: nothing to shout about yet, and nothing to say under it. */
+#status:not(.clear, .soon, .hold, [data-stale]) .state { font-size: var(--text-l); white-space: normal; }
+#status:not(.clear, .soon, .hold, [data-stale]) .notes { display: none; }
+
+/* The mark: a disc for clear, a triangle for heads up, a square for hold, a struck-out ring for no data. */
+.lamp { flex: none; width: 0.58em; height: 0.58em; background: currentColor; border-radius: 50%; }
+.soon .lamp { border-radius: 0; clip-path: polygon(50% 4%, 100% 96%, 0 96%); }
+.hold .lamp { border-radius: 0; }
+:is(#status, #bar):not(.clear, .soon, .hold) .lamp { background: linear-gradient(-45deg, transparent 44%, currentColor 0 56%, transparent 0); border: 0.09em solid; }
+#status:not(.clear, .soon, .hold, [data-stale]) .lamp { background: none; }
+
+/* The slim bar: the banner's mark, word and countdown again, pinned to the top for as long as the
+   banner's own are off the screen. app.js sets the two together, and shows and hides this one. It is
+   never there before an address, when there is no status to give. */
+#bar {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+  height: calc(var(--top) + var(--bar));
+  padding: var(--top) max(var(--right), (100% - var(--page)) / 2) 0 max(var(--left), (100% - var(--page)) / 2);
+  /* Never wider than the screen, however large the reader has set their text: the mark, "Heads up"
+     and a countdown are about 12 em. */
+  font-family: var(--font);
+  font-size: min(var(--text-xl), 7.5vw);
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  background-color: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+#bar[hidden], #bar:not(.clear, .soon, .hold, [data-stale]) { display: none; }
+#bar[data-stale] { background-size: 100% 0.375rem; }
+#bar .count { margin-left: 0.25em; font-family: var(--font-num); }
+/* It fades in, which is easier on a scrolling eye than dropping in; it goes at once, because by then
+   the banner is back. */
+@media (prefers-reduced-motion: no-preference) {
+  #bar { transition: opacity 0.2s ease-out; }
+  @starting-style {
+    #bar { opacity: 0; }
+  }
+}
+
+.signal:has(#feed:empty):has(#awake:empty) { display: none; }
+#awake[data-warn] { color: var(--ink); font-weight: 700; } /* something the mixer has to do */
+.signal { line-height: 1.4; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 1.5rem; margin-top: -0.5rem; font-size: var(--text-s); color: var(--ink-2); }
+/* On a phone the caption is also above the map: one line each, always, so that "9 aircraft" turning
+   into "10 aircraft" cannot move it either. */
+@media (max-width: 45.99rem) {
+  .signal { flex-direction: column; flex-wrap: nowrap; }
+  #feed { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+}
+
+/* The map and the listening panel fill the boxes they are given here. */
+#map { aspect-ratio: 4 / 3; min-height: 17rem; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+#listen:empty { display: none; }
+
+h2 { font-size: var(--text-m); font-weight: 800; padding-bottom: 0.375rem; border-bottom: 2px solid var(--ink); }
+h3 { font-size: var(--text-s); font-weight: 700; margin-top: 1.25rem; padding-bottom: 0.375rem; border-bottom: 1px solid var(--ink-2); }
+.traffic:has(#ground:empty) h3 { display: none; }
+#none { padding-block: 0.625rem; color: var(--ink-2); }
+
+/* Aircraft: rows on hairlines, like a sound report. Time down the left, level on a meter. */
+.traffic { container-type: inline-size; }
+.rows { list-style: none; }
+.rows li { border-bottom: 1px solid var(--line); }
+.rows button {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  grid-template-areas: 'when who' 'lasts doing' '. heard';
+  column-gap: 0.75rem;
+  width: 100%;
+  padding: 0.625rem 0.5rem;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-left: 0.25rem solid transparent;
+  cursor: pointer;
+}
+.rows button:focus-visible { outline-offset: -3px; }
+@media (hover: hover) {
+  .rows button:hover { background: color-mix(in srgb, var(--panel) 55%, transparent); }
+}
+/* The open row, with its details under it, is one panel with the accent down its edge. */
+.rows .selected { background: var(--panel); box-shadow: inset 0.25rem 0 var(--accent); }
+.when { grid-area: when; font-size: var(--text-l); font-weight: 800; line-height: 1.2; }
+.lasts { grid-area: lasts; font-size: var(--text-s); color: var(--ink-2); }
+/* Taxiing has no time to give, so its first column is words at text size, not a readout. */
+#ground .when { font-size: var(--text-m); line-height: 1.625; }
+.who { grid-area: who; align-self: end; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.doing { grid-area: doing; font-size: var(--text-s); color: var(--ink-2); text-wrap: pretty; }
+.doing::first-letter { text-transform: uppercase; }
+.heard { grid-area: heard; display: flex; flex-wrap: wrap; gap: 0 1rem; margin-top: 0.125rem; font-size: var(--text-s); }
+.loud { font-weight: 700; }
+.sure { color: var(--ink-2); }
+/* What drives it: a jet, a propeller, a helicopter, or a dashed ring for not known. One shape shows. */
+.engine { width: 1.375em; height: 1.375em; margin-right: 0.3em; vertical-align: -0.3em; fill: currentColor; }
+.engine > * { display: none; }
+.engine[data-shape='jet'] .jet, .engine[data-shape='prop'] .prop, .engine[data-shape='heli'] .heli, .engine[data-shape='unknown'] .unknown { display: inline; }
+.engine[data-shape='unknown'] { color: var(--ink-2); }
+/* The open row's details replace its one line of what it is doing, which they say again, and the level
+   moves up into that line. They line up under the aircraft's name, in two columns where the list is
+   wide enough. */
+.rows .selected .doing { display: none; }
+.rows .selected button { grid-template-areas: 'when who' 'lasts heard'; }
+.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr)); gap: 0 1rem; margin: 0; padding: 0 0.5rem 0.625rem 0.75rem; font-size: var(--text-s); line-height: 1.3; }
+.rows li:not(.selected) .facts { display: none; }
+.facts div { display: grid; grid-template-columns: 6.25rem minmax(0, 1fr); gap: 0 0.5rem; }
+.facts dt { color: var(--ink-2); }
+.facts dd { margin: 0; font-weight: 700; overflow-wrap: anywhere; }
+/* Eight segments; --lit of them are on. One ink, so a loud aircraft in the list never looks like a hold. */
+.meter {
+  display: inline-block;
+  width: 3.5rem;
+  height: 0.6875rem;
+  margin-right: 0.25rem;
+  background: linear-gradient(90deg, currentColor calc(var(--lit) * 12.5%), var(--line) 0);
+  -webkit-mask: repeating-linear-gradient(90deg, #000 0 calc(12.5% - 2px), transparent 0 12.5%);
+  mask: repeating-linear-gradient(90deg, #000 0 calc(12.5% - 2px), transparent 0 12.5%);
+}
+@container (min-width: 34rem) {
+  .rows button { grid-template-columns: 4.5rem minmax(0, 1fr) auto; grid-template-areas: 'when who heard' 'lasts doing heard'; }
+  .heard { flex-direction: column; align-items: flex-end; margin-top: 0; font-size: inherit; }
+  .sure { font-size: var(--text-s); }
+  .rows .selected button { grid-template-areas: 'when who heard' 'lasts . heard'; }
+}
+@container (min-width: 26rem) {
+  .facts { padding-left: 6rem; } /* under the name: the time column's 4.5rem, the gap, and the button's edge and padding */
+}
+/* Old data: the rows are left as they were, greyed so they don't read as live. */
+main:has(#status[data-stale]) .traffic { opacity: 0.45; }
+
+/* Notifications: a running log, newest first. The mark repeats the banner's shapes. */
+#log { list-style: none; font-size: var(--text-s); }
+#log li { display: grid; grid-template-columns: 4.5rem 0.625rem minmax(0, 1fr); align-items: baseline; gap: 0 0.625rem; padding-block: 0.4375rem; border-bottom: 1px solid var(--line); }
+#log time { grid-area: 1 / 1; color: var(--ink-2); }
+#log span { grid-area: 1 / 3; }
+#log li::before { content: ''; grid-area: 1 / 2; width: 0.625rem; height: 0.625rem; background: var(--clear); border-radius: 50%; }
+#log [data-kind='soon']::before { background: var(--soon); border-radius: 0; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+#log [data-kind='hold']::before { background: var(--hold); border-radius: 0; }
+
+footer { display: grid; gap: 0.5rem; margin-top: 2rem; padding-top: 0.75rem; border-top: 1px solid var(--line); font-size: var(--text-s); color: var(--ink-2); }
+footer p { max-width: 72ch; }
+
+/* Wider than a phone: the top line is one row, the status is one line across the top, and the map
+   sits beside the list, with the timeline and the log full width underneath. This is what a window
+   too short for the first screen below gets, and it scrolls. */
+@media (min-width: 46rem) {
+  header { flex-wrap: nowrap; }
+  main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: 'status status' 'signal signal' 'map traffic' 'listen listen' 'history history';
+    align-items: start;
+  }
+  #status { grid-area: status; padding: 0.5rem 1.25rem 1.25rem; }
+  .signal { grid-area: signal; }
+  #map { grid-area: map; aspect-ratio: auto; min-height: 0; }
+  #listen { grid-area: listen; align-self: start; } /* never stretched: its chart would take up the slack */
+  .traffic { grid-area: traffic; }
+  .history { grid-area: history; }
+  .readout { flex-direction: row; align-items: baseline; gap: 0 calc(var(--text-row) * 0.3); line-height: 1; } /* room for the p in "Heads up" */
+  .state { align-items: baseline; }
+  .state, #count { font-size: var(--text-row); }
+  #count { margin-top: 0; }
+  #map, .traffic { height: clamp(20rem, 52vh, 40rem); }
+  /* The list scrolls inside its own height, so a busy sky doesn't push the timeline off the screen. */
+  .traffic { overflow-y: auto; scroll-padding-top: 2.5rem; }
+  .traffic h2 { position: sticky; top: 0; z-index: 1; background: var(--bg); }
+}
+
+/* ---- The first screen ----
+   On a tablet either way up, and on anything else with the room, what a mixer watches during a take
+   fills the screen exactly: the status, the map, the aircraft that will be heard, and the timeline.
+   Nothing they need is below the fold, and nothing moves when the words change, because every box has
+   its height from the screen and not from what is in it. --desk is the height under the top line, and
+   the rows are shares of it. What can wait carries on underneath: the timeline's key and controls,
+   the log, and the fine print. */
+@media (min-width: 46rem) and (min-height: 52rem) and (orientation: portrait), (min-width: 60rem) and (min-height: 40rem) and (orientation: landscape) {
+  main {
+    /* svh, not dvh: the boxes must not resize as a browser's toolbar slides away. */
+    --foot: max(var(--gap), env(safe-area-inset-bottom, 0px)); /* kept clear under the first screen */
+    --desk: min(100svh - var(--head) - var(--top) - var(--foot), var(--tallest));
+    --line-s: calc(var(--text-s) * 1.4); /* one line of the caption */
+    --cap: var(--line-s);
+    align-items: stretch;
+  }
+  /* Keeping the screen on is the one thing here the mixer may have to do, so it goes first. */
+  #awake[data-warn] { order: -1; }
+  /* The caption has its line and no more: what does not fit wraps out of sight. */
+  .signal { align-self: start; height: var(--cap); overflow: hidden; }
+  /* The words sit straight under the readout and grow downwards, so a longer sentence moves nothing. */
+  #status { container-type: size; flex-flow: column nowrap; align-items: stretch; justify-content: flex-start; gap: 0.5rem; overflow: hidden; }
+  .notes { flex: none; }
+  #status:not(.clear, .soon, .hold, [data-stale]) { justify-content: center; } /* before an address: a box waiting, like the map beside it */
+  /* The readout is sized to leave the detail three lines (theme.css). A sentence longer than that ends in an ellipsis. */
+  #then { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+  #map, .traffic { height: auto; }
+  .traffic { border-bottom: 1px solid var(--line); } /* the list ends at this edge, and scrolls under it when it is long */
+  /* The timeline's chart may be this short, and what follows it starts below the screen's edge. While
+     it is listening, what it hears is its heading, and here that is a headline and one line. */
+  #listen { --chart: 11rem; --below: var(--foot); --heading: none; --say-lines: 1; }
+}
+
+/* Upright: the status across the top, the map beside the list, and the timeline across the bottom,
+   where its key and controls can follow it down the page. */
+@media (min-width: 46rem) and (min-height: 52rem) and (orientation: portrait) {
+  main {
+    --tallest: 90rem; /* past this a monitor stood on end shows more of the page instead */
+    --r1: min(var(--desk) * 0.23, 12.5vw + 6.9rem); /* no taller than its one line and the words under it need */
+    --r2: calc(var(--desk) * 0.32);
+    --r3: calc(var(--desk) - var(--r1) - var(--cap) - var(--r2) - 3 * var(--gap));
+    grid-template-rows: var(--r1) var(--cap) var(--r2) auto auto;
+  }
+  #listen { --fold: var(--r3); }
+  /* The caption is as wide as the page here, so the screen reminder and the feed's line share its one
+     line. The reminder is kept whole, and the feed's is cut short if the two do not fit. */
+  .signal { flex-wrap: nowrap; }
+  #awake { flex: none; }
+  #feed { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+}
+
+/* On its side: two columns. The left is when (the status over the timeline), the right is who and
+   where (the map over the list). The status is stacked as it is on a phone, so the countdown is as
+   large as the column allows. */
+@media (min-width: 60rem) and (min-height: 40rem) and (orientation: landscape) {
+  main {
+    --tallest: 66rem; /* past this a large monitor shows more of the page instead */
+    --r1: min((var(--desk) - var(--gap)) * 0.46, 26rem);
+    --r2: calc(var(--desk) - var(--gap) - var(--r1));
+    grid-template-columns: minmax(0, 6fr) minmax(0, 5fr);
+    grid-template-rows: var(--r1) calc(var(--r2) - var(--cap) - var(--gap)) var(--cap) auto;
+    grid-template-areas: 'status map' 'listen traffic' 'listen signal' 'listen history';
+  }
+  #status { padding: 0.75rem 1.125rem 0.875rem; }
+  .readout { flex-direction: column; align-items: stretch; gap: 0; line-height: 0.9; }
+  .state { align-items: center; font-size: var(--text-word); }
+  #count { font-size: var(--text-count); margin-top: 0.06em; }
+  #listen { --fold: var(--r2); }
+  /* The caption is one column wide here, so the screen reminder gets a line of its own above the feed's. */
+  main:has(#awake[data-warn]) { --cap: calc(var(--line-s) * 2); }
+}
+
+/* A laptop: the same, with the log in a column of its own, so the width is used and nothing is stretched. */
+@media (min-width: 88rem) and (min-height: 40rem) and (orientation: landscape) {
+  :root { --page: 108rem; }
+  main {
+    grid-template-columns: minmax(0, 6fr) minmax(0, 5fr) minmax(0, 4fr);
+    grid-template-areas: 'status map history' 'listen traffic history' 'listen signal history' 'listen . .';
+  }
+  .history { overflow-y: auto; }
+  .history h2 { position: sticky; top: 0; z-index: 1; background: var(--bg); }
+}
+
+/* A tablet has room for the set summary on its own line, leaving the top row for actions. */
+@media (min-width: 46rem) and (max-width: 69.99rem) {
+  :root { --head: 4.75rem; }
+  header { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: 2.75rem 1.5rem; gap: 0.5rem 1rem; }
+  .set-summary { grid-column: 1 / -1; grid-row: 2; }
+  #change { grid-column: 2; grid-row: 1; }
+}

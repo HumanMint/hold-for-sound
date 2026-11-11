@@ -1,0 +1,72 @@
+<img src="assets/icon.svg" width="64" height="64" alt="">
+
+# hold-for-sound
+
+A web page that warns a film-set sound mixer before an aircraft is audible at the set, for how long, and when it is clear again. It is a personal experiment, not a commercial service, and everything it shows is an estimate.
+
+## Run it
+
+Needs Node 22 or newer. Nothing to install.
+
+```sh
+npm start   # http://127.0.0.1:8787
+npm test
+```
+
+It also listens on this machine's Tailscale address when Tailscale is running, never on the local network. Enter the set's address or coordinates, and whether the microphone is outdoors, indoors or on a stage.
+
+## Try it without live data
+
+```sh
+REPLAY=test/fixtures/lax.jsonl npm start
+```
+
+Then enter `33.938, -118.440`. This plays about six and a half minutes of recorded traffic beside LAX on a loop.
+
+## Settings
+
+All optional, as environment variables:
+
+- `PORT`: the port to listen on.
+- `PASSWORD`: the page and its data need this password; the notices page does not.
+- `LOG_DIR`: a folder for sessions that visitors choose to share; without it, sharing is not offered.
+- `ADSB_LOL_KEY`: an adsb.lol API key, sent to adsb.lol only.
+- `ADSB_LOL_DAY`: how many adsb.lol requests the server makes in a day before it pauses.
+- `ADSB_LOL_MONTH`: the same, over 30 days.
+- `RECEIVER`: the URL of an ADS-B receiver's `aircraft.json`, whose aircraft are added to the feed.
+- `PUBLIC_HOST`: public mode: the host name to answer to, behind a proxy such as Cloudflare, listening on loopback only and with tighter limits.
+- `OWNER_PORT`: in public mode, a loopback port that serves the traffic counters.
+
+## How it predicts
+
+Every 5 seconds it fetches the aircraft within 30 nautical miles and steps each one's path forward 8 minutes, estimating the loudness at the set from the aircraft's size, distance, height and the building's insulation. An aircraft is listed when that estimate rises above the warning level.
+
+- On a runway: it accelerates, lifts off and climbs straight out.
+- On final approach: it follows the centreline down and goes quiet on touchdown.
+- A helicopter: judged by its last minute of flight, with a widening spread of headings.
+- Anything else: it keeps its speed, heading and climb.
+- An aircraft the feed loses is carried on from its last position for up to 2 minutes, shown as an estimate.
+
+The loudness numbers are guesses, not measurements. Turns away from a runway are not foreseen, and aircraft that do not broadcast their position never appear.
+
+## Listening
+
+**Listen with the microphone** compares what the set hears with the predictions. It learns the background, matches aircraft by their Doppler pitch or by when the noise rose, reports noise no tracked aircraft explains, and can tune the warning level after several aircraft. Every threshold is a guess. **Try it with demo sound** runs the same steps on made-up sound.
+
+## Privacy
+
+The sound is analysed in the browser and is never recorded, stored or sent. Settings stay in the browser. The location is asked for only when **Use my location** is pressed. The server holds addresses looked up, and IP addresses, in memory for up to a day, never on disk. Nothing else about a session is kept unless the visitor switches on **Share data with the developer**, which is offered only when `LOG_DIR` is set. [`public/about.html`](public/about.html) lists what is sent where.
+
+## Data and credits
+
+- Flight data: [adsb.lol](https://adsb.lol), under the [Open Database License 1.0](https://opendatacommons.org/licenses/odbl/1-0/); [adsb.fi](https://adsb.fi), for non-commercial use only.
+- Address lookup and map: [OpenStreetMap](https://www.openstreetmap.org/copyright) (Nominatim and standard tiles), data under the Open Database License; use follows the [Nominatim](https://operations.osmfoundation.org/policies/nominatim/) and [tile](https://operations.osmfoundation.org/policies/tiles/) usage policies.
+- Elevation: [Open-Meteo](https://open-meteo.com/), under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). "Copernicus WorldDEM-90 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA".
+- Runways: [OurAirports](https://ourairports.com/data/), public domain.
+- The recording in `test/fixtures/` contains information from adsb.lol, under the Open Database License 1.0.
+
+## Licence
+
+[PolyForm Noncommercial 1.0.0](LICENSE). The typeface in `public/fonts/` (Barlow Semi Condensed) is under the SIL Open Font License (`public/fonts/OFL.txt`).
+
+Questions and problems: open an issue on this repository.

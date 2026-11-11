@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit=cover: on a tablet opened from the home screen the page reaches the edges, and page.css keeps clear of the corners. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Hold for Sound</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<!-- The page may be hosted under a path, and its links are relative, so the address must end in a slash. -->
+<script>if (!location.pathname.endsWith('/')) location.replace(location.pathname + '/' + location.search);</script>
+<link rel="preload" href="fonts/barlow-semi-condensed-800.woff2" as="font" type="font/woff2" crossorigin>
+<!-- Version entry assets when markup changes: older public browsers may still have a cached release. -->
+<link rel="stylesheet" href="theme.css?v=20261110-setup">
+<!-- page.css lays the page out and sizes the boxes of the map and the listening panel. Their own
+     stylesheets come after it, so they have the last word on what is inside. -->
+<link rel="stylesheet" href="page.css?v=20261110-setup">
+<link rel="stylesheet" href="map.css?v=20261110-setup">
+<link rel="stylesheet" href="listen.css?v=20261110-setup">
+<link rel="stylesheet" href="share.css?v=20261111-release">
+</head>
+<body>
+<!-- The status again, in one slim line: shown at the top while the banner below is scrolled off the screen.
+     app.js fills both from the same call. It is hidden from screen readers, which have the banner. -->
+<div id="bar" aria-hidden="true" hidden><span class="lamp"></span><span class="word"></span><span class="count"></span></div>
+<header>
+  <h1>Hold for Sound</h1>
+  <div class="set-summary">
+      <span id="where">Choose a location</span>
+      <span id="levels"></span>
+  </div>
+  <button type="button" id="change" class="quiet" aria-haspopup="dialog">Set up</button>
+</header>
+<dialog id="settings" class="setup-dialog" aria-labelledby="setup-title">
+  <div class="dialog-heading">
+    <div><p class="eyebrow">Location &amp; sound</p><h2 id="setup-title" tabindex="-1" autofocus>Set up your watch</h2></div>
+    <button type="button" id="close-settings" class="quiet" aria-label="Close setup">Close</button>
+  </div>
+    <form id="setup">
+      <div class="setup-location">
+      <label for="q">Set address, or latitude and longitude</label>
+      <div class="lookup">
+        <input type="text" id="q" name="q" required placeholder="5555 Melrose Ave, Los Angeles" autocomplete="off" enterkeyhint="go">
+        <button>Watch this address</button>
+      </div>
+      <!-- For someone standing on the set. Nothing asks where the device is until this is pressed, and
+           then once: app.js asks, and locate.js decides what the answer means. -->
+      <div class="here">
+        <button type="button" id="here" class="quiet" aria-describedby="hereGoes">Use my location</button>
+        <p id="hereGoes">Asked only when pressed.</p>
+      </div>
+      <p id="site" aria-live="polite"></p>
+      <fieldset id="examples" class="examples">
+        <legend>Try a live location</legend>
+        <div>
+          <button type="button" class="quiet" data-q="33.9384, -118.4393" data-name="Dockweiler Beach · LAX">Dockweiler Beach<span>Los Angeles · LAX</span></button>
+          <button type="button" class="quiet" data-q="38.8639, -77.0434" data-name="Gravelly Point · DCA">Gravelly Point<span>Washington, DC · DCA</span></button>
+          <button type="button" class="quiet" data-q="37.6031, -122.3631" data-name="Bayfront Park · SFO">Bayfront Park<span>San Francisco · SFO</span></button>
+        </div>
+      </fieldset>
+      </div>
+      <div class="setup-sound">
+      <fieldset>
+        <!-- How much walls take off an aircraft's sound (predict.js ENVIRONMENTS), so it is where the
+             mic is, not how many warnings: data-short is the folded summary's word for it. -->
+        <legend>Where is the mic?</legend>
+        <div class="choices">
+          <label><input type="radio" name="env" value="outdoors" data-short="Outdoors" checked> Outdoors<span>EXT. · or an open window</span></label>
+          <label><input type="radio" name="env" value="indoors" data-short="Indoors"> Indoors<span>INT. · windows shut</span></label>
+          <label><input type="radio" name="env" value="stage" data-short="Soundstage"> Soundstage<span>INT. · enclosed stage</span></label>
+        </div>
+      </fieldset>
+      <label>Warn above <output id="floorOut"></output> dBA at the mic
+        <input type="range" name="floor" min="15" max="65" value="45"></label>
+      <p class="ends"><span>Quiet set</span><span>Noisy set</span></p>
+      <p id="floorBy"></p>
+      </div>
+
+    </form>
+</dialog>
+<main>
+  <!-- The class says the state: hold, soon, clear, or none while there is nothing to go on. -->
+  <section id="status" aria-label="Status">
+    <p class="readout">
+      <span class="state"><span class="lamp" aria-hidden="true"></span><span id="word" class="word">Not watching</span></span>
+      <span id="count" class="count" role="timer"></span>
+    </p>
+    <div class="notes">
+      <p id="what"></p>
+      <p id="then"></p>
+    </div>
+  </section>
+  <p class="signal"><span id="feed"></span> <span id="awake"></span></p>
+  <!-- Filled by map.js and listen.js. Each owns everything inside its own element. -->
+  <section id="map" aria-label="Map of aircraft around the set"></section>
+  <section id="listen" aria-label="What the microphone hears"></section>
+  <section class="traffic">
+    <h2>Aircraft you'll hear</h2>
+    <ol id="upcoming" class="rows"></ol>
+    <p id="none" hidden></p>
+    <h3>Taxiing, may take off</h3>
+    <ol id="ground" class="rows"></ol>
+  </section>
+  <section class="history">
+    <h2>Log</h2>
+    <ul id="log" aria-live="polite"></ul>
+  </section>
+</main>
+<footer>
+  <p>Personal experiment, not a commercial service. Estimates only. · <a href="about.html" target="_blank" rel="noopener">About and privacy</a></p>
+  <p><a href="https://adsb.lol" target="_blank" rel="noopener">adsb.lol</a> (<a href="https://opendatacommons.org/licenses/odbl/1-0/" target="_blank" rel="noopener">ODbL</a>),
+  <a href="https://adsb.fi" target="_blank" rel="noopener">adsb.fi</a>, <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a>,
+  <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>, <a href="https://open-meteo.com/en/docs/elevation-api" target="_blank" rel="noopener">Copernicus DEM</a>,
+  <a href="https://ourairports.com/data/" target="_blank" rel="noopener">OurAirports</a></p>
+</footer>
+<!-- One aircraft in a list. app.js copies it, sets data-hex, and keeps the same copy up to date. The
+     icon shows one of its shapes, picked by data-shape (engine.js). The details are outside the button,
+     so they are not read out as its name, and filled only while the row is open. -->
+<template id="row">
+  <li><button type="button">
+    <span class="when"></span>
+    <span class="lasts"></span>
+    <span class="who"><svg class="engine" viewBox="0 0 24 24" role="img">
+        <path class="jet" d="M12 1.5c.9 0 1.6 1 1.6 2.3V9l8.4 5.1v2.3l-8.4-2.6v4.9l2.6 2V22L12 21l-4.2 1v-1.3l2.6-2v-4.9L2 16.4v-2.3L10.4 9V3.8c0-1.3.7-2.3 1.6-2.3z"/>
+        <g class="prop"><circle cx="12" cy="12" r="2.6"/><path d="M10.8 10.3C9.2 7.4 9 4.1 10.4 2.2c.8-1.1 2.4-1.1 3.2 0 1.4 1.9 1.2 5.2-.4 8.1z"/><path d="M10.8 10.3C9.2 7.4 9 4.1 10.4 2.2c.8-1.1 2.4-1.1 3.2 0 1.4 1.9 1.2 5.2-.4 8.1z" transform="rotate(120 12 12)"/><path d="M10.8 10.3C9.2 7.4 9 4.1 10.4 2.2c.8-1.1 2.4-1.1 3.2 0 1.4 1.9 1.2 5.2-.4 8.1z" transform="rotate(240 12 12)"/></g>
+        <g class="heli"><path d="M2.5 3.2h19v1.7h-19zM11.2 4.9h1.6v2.4h-1.6z"/><path d="M9.5 7.3h3.8c2 0 3.4 1.2 3.8 2.9l4.4-.3V7.6h1.5v5h-1.5v-1.1l-4.4.5c-.4 1.9-2 3.2-4.3 3.2H8.7C6 15.2 3.8 13.4 3.8 11.2S6.3 7.3 9.5 7.3z"/><path d="M7.4 15h1.5v2.6H7.4zm5 0h1.5v2.6h-1.5zM3.6 17.4h13.6v1.5H4.8c-.7 0-1.2-.6-1.2-1.5z"/></g>
+        <g class="unknown"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3.2 2.45"/><path d="M9.3 9.6c0-1.6 1.2-2.7 2.8-2.7 1.6 0 2.8 1 2.8 2.4 0 1.1-.6 1.7-1.5 2.3-.6.4-.8.7-.8 1.4v.4h-1.9v-.6c0-1.1.4-1.7 1.3-2.3.6-.4.9-.7.9-1.2 0-.5-.4-.9-.9-.9-.6 0-1 .4-1 1.1zm1.3 5.5h2v2h-2z"/></g>
+      </svg><b class="flight"></b> <span class="type"></span></span>
+    <span class="doing"></span>
+    <span class="heard">
+      <span class="level"><span class="meter" aria-hidden="true"></span> <span class="loud"></span></span>
+      <span class="sure"></span>
+    </span>
+  </button><dl class="facts"></dl></li>
+</template>
+<!-- map.js and listen.js come first so they are listening before app.js sends its first update. -->
+<script type="module" src="map.js?v=20261110-setup"></script>
+<script type="module" src="listen.js?v=20261111-release"></script>
+<script type="module" src="share.js?v=20261111-retry"></script>
+<script type="module" src="app.js?v=20261111-quota"></script>
+</body>
+</html>

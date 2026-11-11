@@ -1,0 +1,83 @@
+/* Shared colours and type for the whole page. Every stylesheet and canvas uses these names, so a
+   change here restyles everything. Canvas code reads them with
+   getComputedStyle(document.documentElement).getPropertyValue('--hold') and must read them again when
+   the colour scheme changes. Light and dark both matter: daylight exteriors and dark stages.
+
+   Light is paper in daylight: dark ink, strong fills. Dark is a recorder's display on a dark stage:
+   nothing bright but the readouts. */
+
+/* Barlow Semi Condensed (SIL Open Font License, see fonts/OFL.txt). Drawn from road signs and
+   equipment labels, and narrow enough that the status reads large on a phone. Latin only. */
+@font-face { font-family: 'Barlow Semi Condensed'; font-weight: 500; font-display: swap; src: url(fonts/barlow-semi-condensed-500.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow Semi Condensed'; font-weight: 700; font-display: swap; src: url(fonts/barlow-semi-condensed-700.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow Semi Condensed'; font-weight: 800; font-display: swap; src: url(fonts/barlow-semi-condensed-800.woff2) format('woff2'); }
+
+:root {
+  color-scheme: light dark;
+  --bg: #eceeec; /* page */
+  --panel: #ffffff; /* raised areas: map, timeline, cards */
+  --line: #b4bab5; /* hairlines and quiet shapes */
+  --ink: #14181a; /* text */
+  --ink-2: #4a5257; /* secondary text */
+  --accent: #1d56c2; /* the selected aircraft, links, focus */
+  /* The three states, as lines, marks and small text on --bg or --panel. Signal-lamp hues: the green
+     leans blue and the red leans orange, so they stay apart for people who confuse red and green. */
+  --clear: #0b6e4f; /* status: clear to roll */
+  --soon: #8f5a00; /* status: aircraft coming */
+  --hold: #c22f1c; /* status: aircraft audible */
+  --on-status: #ffffff; /* text on the three status colours */
+  /* The same three states as large areas (the status banner), each with its own text colour. */
+  --fill-clear: #0b6e4f;
+  --on-fill-clear: #ffffff;
+  --fill-soon: #f5b800;
+  --on-fill-soon: #1a1400;
+  --fill-hold: #c22f1c;
+  --on-fill-hold: #ffffff;
+
+  /* The fallbacks are condensed faces that phones and laptops already have. */
+  --font: 'Barlow Semi Condensed', 'Avenir Next Condensed', 'Roboto Condensed', 'Arial Narrow', sans-serif;
+  --font-ui: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-num: var(--font); /* countdowns and readouts; always with font-variant-numeric: tabular-nums */
+  /* System UI text is 400, labels 600, headings 700; condensed readouts stay 800. */
+  /* A 16px body with 15px captions; the status scales to its own box. */
+  --text-s: 0.9375rem; /* captions, never smaller */
+  --text-m: 1rem; /* body */
+  --text-l: 1.375rem; /* times and other values in rows */
+  --text-xl: 1.9375rem; /* the slim status bar */
+  /* The status, sized to the banner's own box so "Heads up" and "8:00+" always fit: cqi and cqh are
+     hundredths of that box's width and height. Stacked (a phone, or the tablet's status column), the
+     countdown sits under the word at about twice its size. In a row they share a line and a size.
+     Where the box has a height of its own, the part taken off it is the room the words underneath
+     need: one line of --text-l and three (stacked) or two (in a row) of --text-m. A row is also kept
+     under a sixth of the screen's height, so a short, wide window is not all banner. */
+  /* The floor is a size, not a minimum the box can be pushed past: at large text on a narrow phone
+     5.5rem is wider than the screen, so the box's width wins over it. */
+  --text-count: min(clamp(5.5rem, min(39cqi, 72cqh - 5rem), 12rem), 39cqi);
+  --text-word: calc(var(--text-count) * 0.47);
+  --text-row: clamp(4.5rem, min(12.5cqi, 100cqh - 5.5rem, 17svh), 9rem);
+  /* A phone's row: "Heads up 0:00", the widest it has to hold, is 6.8 em with its mark and gap. */
+  --text-line: 14.5cqi;
+
+  --gap: 1rem; /* between the parts of the page */
+  --radius: 4px; /* panels and controls: an instrument window, not a card */
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111314;
+    --panel: #1a1d1f;
+    --line: #3a4045;
+    --ink: #e6e9e7;
+    --ink-2: #a2abb0;
+    --accent: #7db2ff;
+    --clear: #3fcf8e;
+    --soon: #f0b429;
+    --hold: #ff6652;
+    --on-status: #101314;
+    --fill-clear: #0d3b2c;
+    --on-fill-clear: #6fe3ae;
+    --fill-soon: #4a3600;
+    --on-fill-soon: #ffcf4d;
+    --fill-hold: #5a1710;
+    --on-fill-hold: #ff8f7d;
+  }
+}

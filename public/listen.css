@@ -1,0 +1,67 @@
+/* The listening panel (listen.js): the timeline, what is heard in words, what has been learned, and
+   the microphone's controls. Colours and type are theme.css's names. Three things are derived from
+   them, here and on the canvas: the spectrogram's scale runs from --panel (the usual level) to --ink
+   (much louder than usual); loudness is --ink at 14% where predicted and 45% where heard; and names
+   on the canvas sit on --panel at 85%. The status colours keep their meaning: --hold only marks when
+   the page expects to be holding, and nothing here is green or amber. */
+
+/* The panel's parts, one under another, each in a row of its own so that one being hidden moves
+   nothing else. The heading, the words and the chart are the part to keep on the screen. The page
+   may say how tall those three are together with --fold (page.css does, where it fits the first
+   screen): a strut that tall spans their rows, and the chart takes what the other two leave. With no
+   --fold the chart is --chart tall, and it is never less. --below is the space under the chart, and
+   --heading: none drops the heading while there are words to head the panel instead. */
+#listen { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; }
+#listen::before { content: ''; grid-area: 1 / 1 / 4; height: var(--fold, 0); }
+#listen > * { grid-column: 1; }
+/* The space between parts belongs to the part further from the chart, so a hidden part takes its space with it. */
+#listen > :is(h2, .say) { margin-bottom: 0.75rem; }
+#listen > .chart ~ * { margin-top: 0.75rem; }
+#listen > h2 { grid-row: 1; }
+/* Whenever the panel has words of its own to head it: listening, the demo, or a microphone problem. */
+#listen:has(> .say:not([hidden])) > h2 { display: var(--heading, block); }
+/* The words have room for a headline and the line or two after it (two, or what the page says with
+   --say-lines) and are never taller: the chart under them, and on a phone the list under that, must
+   not move each time the words change. listen-view.js keeps them that short; any that still do not
+   fit (large text) can be scrolled to. */
+#listen > .say { grid-row: 2; height: calc(var(--text-l) * 1.2 + var(--text-m) * 1.4 * var(--say-lines, 2)); overflow-y: auto; }
+#listen > .chart { grid-row: 3; }
+#listen > .key { grid-row: 4; }
+#listen > .about { grid-row: 5; }
+#listen > .learned { grid-row: 6; }
+#listen > .controls { grid-row: 7; }
+#listen [hidden] { display: none !important; }
+#listen p { max-width: 76ch; text-wrap: pretty; }
+#listen p:empty { display: none; }
+
+/* Said while the demo runs, beside the heading and again on the canvas. */
+#listen .tag { display: none; margin-left: 0.375rem; padding: 0 0.375rem; font-size: var(--text-s); font-weight: 700; color: var(--bg); background: var(--ink); border-radius: var(--radius); }
+#listen[data-source='demo'] .tag { display: inline-block; }
+
+#listen .head { font-size: var(--text-l); font-weight: 700; line-height: 1.2; }
+
+/* The instrument window. Its font size is the size of the words drawn on the canvas, and the canvas
+   fills it: listen.js draws to whatever height this box has. */
+#listen .chart { position: relative; min-height: var(--chart, 10.75rem); font-size: var(--text-s); background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+#listen:is([data-source='mic'], [data-source='demo']) .chart { min-height: var(--chart, 16rem); } /* room for the spectrogram */
+#listen canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+/* What the marks mean. Each swatch is drawn the way the canvas draws the thing. */
+#listen .key { display: flex; flex-wrap: wrap; gap: 0.125rem 1.25rem; margin: var(--below, 0.5rem) 0 0; padding: 0; list-style: none; font-size: var(--text-s); color: var(--ink-2); }
+#listen:not([data-source='mic'], [data-source='demo']) .key .mic { display: none; }
+#listen .key i { display: inline-block; width: 1.375rem; height: 0.625rem; margin-right: 0.375rem; }
+#listen .k-heard { background: linear-gradient(90deg, var(--panel), var(--ink)); outline: 1px solid var(--line); }
+#listen .k-level { background: color-mix(in srgb, var(--ink) 45%, transparent); }
+#listen .k-pred { background: color-mix(in srgb, var(--ink) 14%, transparent); border-top: 2px solid var(--ink); }
+#listen .k-hold { height: 0.25rem; margin-bottom: 0.1875rem; background: var(--hold); }
+#listen .k-pitch { height: 0; margin-bottom: 0.25rem; border-top: 2px dashed var(--ink); }
+
+#listen .learned { display: grid; gap: 0.375rem; }
+#listen .last { font-weight: 700; }
+#listen .confirm button { margin-left: 0.375rem; }
+
+#listen .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; }
+#listen button { min-height: 2.75rem; padding: 0 1rem; font: inherit; font-weight: 700; color: var(--bg); background: var(--ink); border: 1px solid var(--ink); border-radius: var(--radius); cursor: pointer; }
+#listen button.quiet { color: var(--ink); background: none; border-color: var(--ink-2); }
+#listen .input { display: flex; align-items: center; gap: 0.5rem; min-width: 0; font-weight: 700; }
+#listen select { min-width: 0; max-width: 100%; min-height: 2.75rem; padding: 0 0.5rem; font: inherit; font-weight: 500; color: var(--ink); background: var(--panel); border: 1px solid var(--ink-2); border-radius: var(--radius); }
