@@ -9,6 +9,7 @@ import { details, where } from './details.js';
 import { feedResponse, retryIn, pacer } from './feed.js?v=3';
 
 const $ = (id) => document.getElementById(id);
+document.documentElement.dataset.started = ''; // boot.js: the page has started
 const form = $('setup');
 const settings = $('settings');
 $('change').addEventListener('click', () => {

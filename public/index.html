@@ -9,15 +9,15 @@
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <!-- The page may be hosted under a path, and its links are relative, so the address must end in a slash. -->
 <script>if (!location.pathname.endsWith('/')) location.replace(location.pathname + '/' + location.search);</script>
-<link rel="preload" href="fonts/barlow-semi-condensed-800.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="r/RELEASE/fonts/barlow-semi-condensed-800.woff2" as="font" type="font/woff2" crossorigin>
 <!-- Version entry assets when markup changes: older public browsers may still have a cached release. -->
-<link rel="stylesheet" href="theme.css?v=20261110-setup">
+<link rel="stylesheet" href="r/RELEASE/theme.css">
 <!-- page.css lays the page out and sizes the boxes of the map and the listening panel. Their own
      stylesheets come after it, so they have the last word on what is inside. -->
-<link rel="stylesheet" href="page.css?v=20261110-setup">
-<link rel="stylesheet" href="map.css?v=20261110-setup">
-<link rel="stylesheet" href="listen.css?v=20261111-curves">
-<link rel="stylesheet" href="share.css?v=20261111-release">
+<link rel="stylesheet" href="r/RELEASE/page.css">
+<link rel="stylesheet" href="r/RELEASE/map.css">
+<link rel="stylesheet" href="r/RELEASE/listen.css">
+<link rel="stylesheet" href="r/RELEASE/share.css">
 </head>
 <body>
 <!-- The status again, in one slim line: shown at the top while the banner below is scrolled off the screen.
@@ -134,9 +134,10 @@
   </button><dl class="facts"></dl></li>
 </template>
 <!-- map.js and listen.js come first so they are listening before app.js sends its first update. -->
-<script type="module" src="map.js?v=20261111-trust"></script>
-<script type="module" src="listen.js?v=20261111-merge8"></script>
-<script type="module" src="share.js?v=20261111-consent"></script>
-<script type="module" src="app.js?v=20261111-merge7"></script>
+<script type="module" src="r/RELEASE/boot.js"></script>
+<script type="module" src="r/RELEASE/map.js"></script>
+<script type="module" src="r/RELEASE/listen.js"></script>
+<script type="module" src="r/RELEASE/share.js"></script>
+<script type="module" src="r/RELEASE/app.js"></script>
 </body>
 </html>

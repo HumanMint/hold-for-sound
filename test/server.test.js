@@ -110,3 +110,21 @@ test('without PUBLIC_HOST, a pause from adsb.lol leaves adsb.fi in use, and asks
   await fetch(`${url}/api/aircraft?lat=34&lon=-118`);
   assert.equal(up.calls().at(-2), 'api.adsb.lol', 'and asks it again once its pause is over');
 });
+
+test('the page asks for its scripts and styles under its release, so no browser runs a copy from an earlier one', async (t) => {
+  const url = await serve(t, {});
+  const page = await (await fetch(url)).text();
+  assert.doesNotMatch(page, /r\/RELEASE\//, 'every placeholder is filled in');
+  const links = [...page.matchAll(/(?:src|href)="(r\/([0-9a-f]{12})\/[^"]+)"/g)];
+  assert.ok(links.some((m) => m[1].endsWith('/app.js')) && links.some((m) => m[1].endsWith('/boot.js')) && links.some((m) => m[1].endsWith('/page.css')));
+  assert.equal(new Set(links.map((m) => m[2])).size, 1, 'one release for the whole page');
+  assert.doesNotMatch(page, /(?:src|href)="(?!r\/|https:|about\.html|icon\.svg)[^"]+\.(?:js|css)/, 'no script or style outside it');
+  // A file under any release is the file itself, and what it imports resolves under the same release.
+  const app = links.find((m) => m[1].endsWith('/app.js'))[1];
+  const res = await fetch(`${url}/${app}`);
+  assert.equal(res.status, 200);
+  assert.equal(await res.text(), readFileSync(join(ROOT, 'public/app.js'), 'utf8'));
+  assert.equal((await fetch(`${url}/r/${links[0][2]}/status.js`)).status, 200);
+  assert.equal((await fetch(`${url}/r/${links[0][2]}/fonts/barlow-semi-condensed-800.woff2`)).status, 200);
+  assert.equal((await fetch(`${url}/r/../server.js`)).status, 404);
+});

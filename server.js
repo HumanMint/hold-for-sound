@@ -6,7 +6,7 @@
 // always counted (stats.js).
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { copyFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { queue } from './queue.js';
@@ -94,7 +94,19 @@ setInterval(() => {
   for (const [ip, hit] of callers) if (Date.now() - hit.at >= MIN) callers.delete(ip);
   forgetAnswers();
 }, MIN).unref();
-// Everything in public/ is served, by file extension.
+// Everything in public/ is served, by file extension. The page's own scripts and styles are asked for
+// under r/<release>/, which is stripped here: a new release is a new address for every file they load,
+// so no browser can run a copy cached from an earlier one. The release is a hash of public/, worked out
+// at start in public mode and on each page otherwise, so nobody has to remember to change it.
+const RELEASE_DIR = new URL('public/', import.meta.url);
+function releaseOf() {
+  const hash = createHash('sha256');
+  for (const name of readdirSync(RELEASE_DIR, { recursive: true }).map(String).sort()) {
+    try { hash.update(name).update(readFileSync(new URL(name, RELEASE_DIR))); } catch {} // a folder
+  }
+  return hash.digest('hex').slice(0, 12);
+}
+const RELEASE = PUBLIC_HOST && releaseOf();
 const TYPES = { html: 'text/html', js: 'text/javascript', css: 'text/css', svg: 'image/svg+xml', png: 'image/png', woff2: 'font/woff2', json: 'application/json' };
 
 // Both feeds are free, need no key, and return the same readsb JSON. The second is the fallback, and
@@ -497,11 +509,14 @@ async function handle(req, res) {
         if (post) entering--;
       }
     } else seen.visitor(who);
-    const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
+    const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1).replace(/^r\/[\w-]+\//, '');
     const type = TYPES[name.split('.').pop()];
     if (type && /^[\w-]+([./][\w-]+)*$/.test(name)) {
-      const body = await readFile(new URL(`public/${name}`, import.meta.url)).catch(() => null);
-      if (body && name === 'index.html') seen.count('pages');
+      let body = await readFile(new URL(`public/${name}`, import.meta.url)).catch(() => null);
+      if (body && name === 'index.html') {
+        seen.count('pages');
+        body = body.toString().replaceAll('r/RELEASE/', `r/${RELEASE || releaseOf()}/`);
+      }
       if (body) return res.writeHead(200, { 'content-type': type, 'cache-control': PUBLIC_HOST ? 'no-store' : 'no-cache' }).end(body);
     }
     if (url.pathname === '/api/aircraft') {
