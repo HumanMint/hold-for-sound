@@ -11,7 +11,7 @@ export const CHECK_MISSING = "Check didn't load.";
 export function said(res, answer = {}) {
   // 504 is the server's own "no answer from delivery"; 524 is a proxy's, which gave up waiting on it.
   if (!res || res.status === 504 || res.status === 524) return UNCONFIRMED;
-  if (res.ok) return answer.queued ? 'Sending' : 'Sent'; // queued: delivery has it, and is still sending
+  if (res.ok) return answer.queued ? 'Queued for delivery' : 'Sent'; // queued: delivery has it, and is still sending
   if (res.status === 429) return `Too many messages. Try again in ${retryIn(retryAfter(res.headers.get('retry-after')) || 60)}.`;
   return answer.error || 'Not sent. Try again later.';
 }

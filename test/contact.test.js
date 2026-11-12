@@ -109,7 +109,7 @@ test('the page says Delivery unconfirmed when no answer came, or a gateway gave 
   assert.equal(said(answer(504), { error: 'Delivery unconfirmed' }), UNCONFIRMED);
   assert.equal(said(answer(524)), UNCONFIRMED);
   assert.equal(said(answer(200), { ok: true }), 'Sent');
-  assert.equal(said(answer(200), { ok: true, queued: true }), 'Sending', 'taken, and still going out');
+  assert.equal(said(answer(200), { ok: true, queued: true }), 'Queued for delivery', 'taken, and still going out');
   assert.equal(said(answer(502), { error: 'Not sent. Try again later.' }), 'Not sent. Try again later.');
   assert.equal(said(answer(500)), 'Not sent. Try again later.');
   assert.match(said(answer(429, { 'retry-after': '120' })), /^Too many messages\. Try again in /);
