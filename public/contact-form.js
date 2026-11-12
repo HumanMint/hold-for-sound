@@ -2,7 +2,7 @@
 // somewhere to send messages (GET api/contact). It posts only to this page's own server, which checks
 // the message again and hands it on (contact.js there); nothing of it is kept in this browser.
 
-import { retryAfter, retryIn } from './feed.js?v=3';
+import { said as saying, UNCONFIRMED, WAIT_MS } from './contact-core.js';
 
 function build() {
   document.querySelector('footer > p').insertAdjacentHTML('beforeend', ' <span class="contact-at">· <button type="button" class="quiet contact-open" aria-haspopup="dialog">Contact me</button></span>');
@@ -46,16 +46,12 @@ function build() {
     send.setAttribute('aria-disabled', 'true');
     said.textContent = 'Sending…';
     try {
-      const res = await fetch('api/contact', { method: 'POST', body: new URLSearchParams(new FormData(form)), signal: AbortSignal.timeout(20_000) });
+      const res = await fetch('api/contact', { method: 'POST', body: new URLSearchParams(new FormData(form)), signal: AbortSignal.timeout(WAIT_MS) });
       const answer = await res.json().catch(() => ({}));
-      if (res.ok) {
-        form.reset();
-        said.textContent = 'Sent';
-      } else if (res.status === 429) {
-        said.textContent = `Too many messages. Try again in ${retryIn(retryAfter(res.headers.get('retry-after')) || 60)}.`;
-      } else said.textContent = answer.error || 'Not sent. Try again later.';
+      if (res.ok) form.reset();
+      said.textContent = saying(res, answer);
     } catch {
-      said.textContent = 'Not sent. Try again later.';
+      said.textContent = UNCONFIRMED; // no answer: it may have gone
     } finally {
       send.removeAttribute('aria-disabled');
     }

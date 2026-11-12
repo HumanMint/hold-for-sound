@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { read } from '../log.js';
 
 // Every test server answers the runway table from TEST_RUNWAYS (none, unless a test gives some).
@@ -842,14 +843,15 @@ test('sharing: behind the access password every sharing method needs the cookie,
   assert.equal((await s.post(g, ip, 1, true, cookie)).status, 403);
 });
 
-// A stand-in for where contact messages are delivered: it keeps what it was sent, and answers `status`.
+// A stand-in for where contact messages are delivered: it keeps what it was sent, and answers `status`
+// after `delay` ms.
 async function mailbox(t) {
   const got = [];
   const box = { got, status: 200 };
   const stand = http.createServer((req, res) => {
     let text = '';
     req.on('data', (chunk) => text += chunk);
-    req.on('end', () => { got.push({ headers: req.headers, body: JSON.parse(text) }); res.writeHead(box.status).end(); });
+    req.on('end', () => { got.push({ headers: req.headers, body: JSON.parse(text) }); setTimeout(() => res.writeHead(box.status).end(), box.delay ?? 0); });
   });
   stand.listen(0, '127.0.0.1');
   await once(stand, 'listening');
@@ -868,15 +870,45 @@ test('contact: without CONTACT_URL the form is off', async (t) => {
   assert.doesNotMatch((await s.request('/')).body, /Contact me/, 'the button comes only from the script, once the server says it is on');
 });
 
-test('contact: a good message reaches the stand-in with the token, and nothing of it is logged', async (t) => {
+// Every file under `dir`, unzipped, as text.
+async function everyFile(dir) {
+  const files = [];
+  for (const entry of await readdir(dir, { withFileTypes: true, recursive: true })) {
+    if (!entry.isFile()) continue;
+    const path = join(entry.parentPath, entry.name);
+    const data = await readFile(path);
+    files.push({ path, text: (path.endsWith('.gz') ? gunzipSync(data) : data).toString() });
+  }
+  return files;
+}
+
+test('contact: a good message reaches the stand-in with the token, and nothing of it is logged or kept, sharing on', async (t) => {
   const box = await mailbox(t);
-  const s = await server(t, { CONTACT_URL: box.url, CONTACT_TOKEN: 'test-token' });
+  const s = await sharingServer(t, { CONTACT_URL: box.url, CONTACT_TOKEN: 'test-token' });
   let output = '';
   s.child.stdout.on('data', (chunk) => output += chunk);
   s.child.stderr.on('data', (chunk) => output += chunk);
   assert.deepEqual(JSON.parse((await s.request('/api/contact')).body), { on: true });
-  const sent = await contact(s, '192.0.2.81');
+  // A page sharing its session, with a region for activity.js, sends a message.
+  const region = { 'x-hfs-country': 'US', 'x-hfs-city': 'Burbank', 'x-hfs-lat': '34.2', 'x-hfs-lon': '-118.3' };
+  const g = JSON.parse((await s.ask('192.0.2.81', null, region)).body);
+  assert.equal((await s.post(g, '192.0.2.81', 0, true)).status, 200);
+  assert.equal((await s.request(`/api/aircraft?lat=33.938&lon=-118.440&log=${g.id}`, { 'cf-connecting-ip': '192.0.2.81', 'x-hfs-share': g.token })).status, 200);
+  const sent = await contact(s, '192.0.2.81', note, { 'x-hfs-share': g.token, ...region });
   assert.equal(sent.status, 200, sent.body);
+  const stats = JSON.parse((await s.request('/api/stats', {}, 'GET', s.statsPort)).body);
+  assert.ok(stats.activity.regions.length, 'activity was kept for this page');
+  const files = await everyFile(s.logs);
+  assert.ok(files.some((f) => f.path.endsWith('.log.jsonl.gz')), 'the session was kept');
+  assert.ok(files.some((f) => f.path.endsWith('contact.json')), 'and the day\'s send times');
+  for (const part of ['Sam Mixer', 'sam@example.test', '6R departures', 'private note']) {
+    for (const { path, text } of files) assert.ok(!text.includes(part), `${path} holds nothing of the message: ${part}`);
+    assert.ok(!JSON.stringify(stats).includes(part), `the stats and activity hold nothing of the message: ${part}`);
+  }
+  const day = JSON.parse(files.find((f) => f.path.endsWith('contact.json')).text);
+  assert.deepEqual(Object.keys(day), ['v', 'sent']);
+  assert.equal(day.sent.length, 1);
+  assert.equal(typeof day.sent[0], 'number', 'a time, and nothing else');
   assert.equal(box.got.length, 1);
   assert.equal(box.got[0].headers.authorization, 'Bearer test-token');
   assert.equal(box.got[0].headers['content-type'], 'application/json');
@@ -903,6 +935,45 @@ test('contact: a good message reaches the stand-in with the token, and nothing o
   await stop(s);
   for (const part of ['Sam Mixer', 'sam@example.test', '6R departures', 'test-token', 'spam.example']) assert.ok(!output.includes(part), `the log holds nothing of the message: ${part}`);
   assert.doesNotMatch(output, /contact/i);
+});
+
+test('contact: a page that has gone before its message\'s turn is not sent for', async (t) => {
+  const box = await mailbox(t);
+  box.delay = 800;
+  const s = await server(t, { CONTACT_URL: box.url });
+  const first = contact(s, '192.0.2.86');
+  await new Promise((done) => setTimeout(done, 200));
+  // A second page posts, then gives up before the first delivery and the gap after it are over.
+  const second = http.request({ host: '127.0.0.1', port: s.port, path: '/api/contact', method: 'POST', headers: { host: 'example.test', origin: 'https://example.test', 'cf-connecting-ip': '192.0.2.87', 'content-type': 'application/x-www-form-urlencoded' } });
+  second.on('error', () => {});
+  second.end(new URLSearchParams(note).toString());
+  await new Promise((done) => setTimeout(done, 200));
+  second.destroy();
+  assert.equal((await first).status, 200);
+  await new Promise((done) => setTimeout(done, 1500)); // past the second one's turn
+  assert.equal(box.got.length, 1, 'the second was never sent');
+  box.delay = 0;
+  assert.equal((await contact(s, '192.0.2.88')).status, 200, 'and the line goes on');
+  assert.equal(box.got.length, 2);
+});
+
+test('contact: the day\'s send times survive a restart, and an unreadable file is a day spent', async (t) => {
+  const box = await mailbox(t);
+  const dir = await mkdtemp(join(tmpdir(), 'hfs-contact-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  let s = await server(t, { CONTACT_URL: box.url, STATE_DIR: dir });
+  assert.equal((await contact(s, '192.0.2.89')).status, 200);
+  await stop(s);
+  s = await server(t, { CONTACT_URL: box.url, STATE_DIR: dir });
+  assert.equal((await contact(s, '192.0.2.90')).status, 200);
+  assert.equal(JSON.parse(await readFile(join(dir, 'contact.json'), 'utf8')).sent.length, 2, 'the first send was not forgotten');
+  await stop(s);
+  await writeFile(join(dir, 'contact.json'), '{ not json');
+  s = await server(t, { CONTACT_URL: box.url, STATE_DIR: dir });
+  const refused = await contact(s, '192.0.2.91');
+  assert.equal(refused.status, 429);
+  assert.ok(Number(refused.headers['retry-after']) > 23 * 3600);
+  assert.equal(box.got.length, 2);
 });
 
 test('contact: the 4th message in 15 minutes from one network is refused, with the wait', async (t) => {

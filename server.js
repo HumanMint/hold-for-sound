@@ -19,7 +19,7 @@ import { activity } from './activity.js';
 import { consent } from './consent.js';
 import { retryAfter } from './public/feed.js';
 import { cadence, FAST_S, TAXIED_S } from './cadence.js';
-import { check, limits, webhook, MAX_BODY } from './contact.js';
+import { check, limits, webhook, dispatch, MAX_BODY } from './contact.js';
 
 const PORT = process.env.PORT || 8787;
 const RADIUS_NM = 30;
@@ -38,11 +38,6 @@ const log = createLog(process.env.LOG_DIR, PUBLIC_HOST ? { sessionMax: 32 * 1024
 const seen = traffic();
 const activitySeen = activity();
 const sharing = consent();
-// The contact form is on only with somewhere to send its messages. They go one at a time, like the
-// other upstream calls.
-const deliver = process.env.CONTACT_URL && webhook({ url: process.env.CONTACT_URL, token: process.env.CONTACT_TOKEN, site: PUBLIC_HOST || 'local' });
-const contactLine = queue(1000);
-const contacts = limits();
 
 // Per client address, the distinct keys it used in the last `ms`: a new one past `max` is refused, and
 // the answer is how many seconds until one frees up (0 when allowed).
@@ -201,6 +196,13 @@ if (STATE) {
     }
   }
 }
+// The contact form is on only with somewhere to send its messages. They go one at a time, like the
+// other upstream calls, each answered within TOTAL_MS of its arrival (contact.js). The day's send
+// times are kept beside the adsb.lol budget.
+const deliver = process.env.CONTACT_URL && webhook({ url: process.env.CONTACT_URL, token: process.env.CONTACT_TOKEN, site: PUBLIC_HOST || 'local' });
+const contactLine = queue(1000);
+const contacts = limits({ file: deliver && STATE_DIR ? join(STATE_DIR, 'contact.json') : undefined });
+const sendContact = deliver && dispatch({ line: contactLine, deliver });
 function overBudget(now) {
   while (spent.length && now - spent[0] >= 30 * DAY) spent.shift();
   const first = spent.findIndex((at) => now - at < DAY);
@@ -581,6 +583,9 @@ async function handle(req, res) {
     }
     // The contact form (contact.js). Nothing of a message is logged or kept: it is checked and handed on.
     if (url.pathname === '/api/contact') {
+      const arrived = Date.now();
+      let gone = false;
+      res.once('close', () => { gone = true; });
       if (req.method !== 'POST') return json(200, { on: !!deliver });
       if (!deliver) return json(404, { error: 'Contact form is off.' });
       // Outside public mode too, a browser may post only from this page's own address (or a proxy's).
@@ -595,13 +600,13 @@ async function handle(req, res) {
       const { message, error } = check(text);
       if (error) return json(400, { error });
       const wait = contacts.take(who);
+      if (wait === null) return json(503, { error: 'Not sent. Try again later.' });
       if (wait) return refuse(wait, 'Too many messages. Try again later.');
-      try {
-        await contactLine(() => deliver(message));
-      } catch {
-        return json(502, { error: 'Not sent. Try again later.' });
-      }
-      return json(200, { ok: true });
+      // A page that has gone, or waited past its time, before this one's turn is not sent for.
+      const sent = await sendContact(message, { arrived, gone: () => gone || req.socket.destroyed }).catch(() => 'failed');
+      if (sent === 'sent') return json(200, { ok: true });
+      if (sent === 'unconfirmed') return json(504, { error: 'Delivery unconfirmed' });
+      return json(sent === 'dropped' ? 503 : 502, { error: 'Not sent. Try again later.' });
     }
     if (url.pathname === '/api/geocode') {
       seen.count('api');
