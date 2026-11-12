@@ -615,6 +615,7 @@ async function handle(req, res) {
       // A page that has gone, or waited past its time, before this one's turn is not sent for.
       const sent = await sendContact(message, { arrived, gone: () => gone || req.socket.destroyed }).catch(() => 'failed');
       if (sent === 'sent') return json(200, { ok: true });
+      if (sent === 'queued') return json(200, { ok: true, queued: true });
       if (sent === 'unconfirmed') return json(504, { error: 'Delivery unconfirmed' });
       if (sent === 'unchecked') {
         contacts.release(at); // a failed check does not spend everyone's day

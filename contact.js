@@ -133,6 +133,7 @@ export function webhook({ url, token, site, fetch = globalThis.fetch }) {
       throw Object.assign(new Error(late ? 'contact delivery did not answer in time' : 'contact delivery failed'), { unconfirmed: late });
     }
     if (!(res.status >= 200 && res.status < 300)) throw Object.assign(new Error(`contact delivery answered ${res.status}`), { status: res.status });
+    return res.status; // 202: taken, and still going out
   };
 }
 
@@ -143,15 +144,15 @@ export const TOTAL_MS = WAIT_MS - 5000;
 // Messages go one at a time through `line`, each within `totalMs` of its arrival. One whose sender has
 // gone (`gone()`) or whose time has run out before its turn is dropped unsent, and a delivery is given
 // only the time left, and none is begun with less than `leastMs` left. send(message, { arrived, gone })
-// resolves 'sent', 'dropped', 'unconfirmed', 'unchecked' (delivery answered 400 to a message carrying
-// a check's token: the check failed) or 'failed'; it rejects only when the line is full.
+// resolves 'sent', 'queued' (delivery took it, answering 202, and is still sending it), 'dropped',
+// 'unconfirmed', 'unchecked' (delivery answered 400 to a message carrying a check's token: the check
+// failed) or 'failed'; it rejects only when the line is full.
 export function dispatch({ line, deliver, totalMs = TOTAL_MS, leastMs = 1000, clock = Date.now }) {
   return (message, { arrived = clock(), gone = () => false } = {}) => line(async () => {
     const left = arrived + totalMs - clock();
     if (gone() || left < leastMs) return 'dropped';
     try {
-      await deliver(message, left);
-      return 'sent';
+      return (await deliver(message, left)) === 202 ? 'queued' : 'sent';
     } catch (e) {
       if (e.unconfirmed) return 'unconfirmed';
       return e.status === 400 && message?.token ? 'unchecked' : 'failed';

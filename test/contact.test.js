@@ -109,6 +109,7 @@ test('the page says Delivery unconfirmed when no answer came, or a gateway gave 
   assert.equal(said(answer(504), { error: 'Delivery unconfirmed' }), UNCONFIRMED);
   assert.equal(said(answer(524)), UNCONFIRMED);
   assert.equal(said(answer(200), { ok: true }), 'Sent');
+  assert.equal(said(answer(200), { ok: true, queued: true }), 'Sending', 'taken, and still going out');
   assert.equal(said(answer(502), { error: 'Not sent. Try again later.' }), 'Not sent. Try again later.');
   assert.equal(said(answer(500)), 'Not sent. Try again later.');
   assert.match(said(answer(429, { 'retry-after': '120' })), /^Too many messages\. Try again in /);
@@ -233,4 +234,16 @@ test('a message the check refused gives the day\'s place back, not the network\'
   now += 24 * 3600_000;
   limit.sweep();
   assert.equal(JSON.parse(await readFile(file, 'utf8')).sent.length, 0, 'a day later the times are gone from the file');
+});
+
+test('a delivery that answers 202 has taken the message and is still sending it', async () => {
+  let status = 202;
+  const send = dispatch({ line: (job) => job(), deliver: async () => status });
+  assert.equal(await send({ name: 'x' }), 'queued');
+  status = 200;
+  assert.equal(await send({ name: 'x' }), 'sent');
+  const answers = [202, 200];
+  const post = webhook({ url: 'https://example.test/contact', site: 's', fetch: async () => new Response(null, { status: answers.shift() }) });
+  assert.equal(await post({ name: 'x' }), 202);
+  assert.equal(await post({ name: 'x' }), 200);
 });
