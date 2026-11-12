@@ -841,3 +841,93 @@ test('sharing: behind the access password every sharing method needs the cookie,
   await s.at(2 * 61_000);
   assert.equal((await s.post(g, ip, 1, true, cookie)).status, 403);
 });
+
+// A stand-in for where contact messages are delivered: it keeps what it was sent, and answers `status`.
+async function mailbox(t) {
+  const got = [];
+  const box = { got, status: 200 };
+  const stand = http.createServer((req, res) => {
+    let text = '';
+    req.on('data', (chunk) => text += chunk);
+    req.on('end', () => { got.push({ headers: req.headers, body: JSON.parse(text) }); res.writeHead(box.status).end(); });
+  });
+  stand.listen(0, '127.0.0.1');
+  await once(stand, 'listening');
+  t.after(() => stand.close());
+  box.url = `http://127.0.0.1:${stand.address().port}/send`;
+  return box;
+}
+const note = { name: 'Sam Mixer', email: 'sam@example.test', category: 'inquiry', message: 'A private note about the 6R departures.', website: '' };
+const contact = (s, ip, fields = note, more = {}) => s.request('/api/contact', { 'cf-connecting-ip': ip, 'content-type': 'application/x-www-form-urlencoded', ...more }, 'POST', undefined, new URLSearchParams(fields).toString());
+
+test('contact: without CONTACT_URL the form is off', async (t) => {
+  const s = await server(t);
+  assert.deepEqual(JSON.parse((await s.request('/api/contact')).body), { on: false });
+  assert.equal((await contact(s, '192.0.2.80')).status, 404);
+  assert.match((await s.request('/')).body, /contact-form\.js/);
+  assert.doesNotMatch((await s.request('/')).body, /Contact me/, 'the button comes only from the script, once the server says it is on');
+});
+
+test('contact: a good message reaches the stand-in with the token, and nothing of it is logged', async (t) => {
+  const box = await mailbox(t);
+  const s = await server(t, { CONTACT_URL: box.url, CONTACT_TOKEN: 'test-token' });
+  let output = '';
+  s.child.stdout.on('data', (chunk) => output += chunk);
+  s.child.stderr.on('data', (chunk) => output += chunk);
+  assert.deepEqual(JSON.parse((await s.request('/api/contact')).body), { on: true });
+  const sent = await contact(s, '192.0.2.81');
+  assert.equal(sent.status, 200, sent.body);
+  assert.equal(box.got.length, 1);
+  assert.equal(box.got[0].headers.authorization, 'Bearer test-token');
+  assert.equal(box.got[0].headers['content-type'], 'application/json');
+  const { website, ...fields } = note;
+  assert.deepEqual(box.got[0].body, { ...fields, site: 'example.test' });
+  // Refused ones too: the honeypot, bad fields, extra fields, the wrong encoding, too long.
+  const refused = [
+    [{ ...note, website: 'http://spam.example' }, 400],
+    [{ ...note, name: 'S' }, 400],
+    [{ ...note, email: 'sam@example.test\r\nBcc: x@example.test' }, 400],
+    [{ ...note, category: 'spam' }, 400],
+    [{ ...note, message: 'short' }, 400],
+    [{ ...note, extra: '1' }, 400],
+    [{ ...note, message: 'x'.repeat(17 * 1024) }, 413],
+  ];
+  for (const [fields, status] of refused) assert.equal((await contact(s, '192.0.2.82', fields)).status, status, JSON.stringify(fields).slice(0, 80));
+  assert.equal((await contact(s, '192.0.2.82', note, { 'content-type': 'application/json' })).status, 415);
+  assert.equal(box.got.length, 1, 'nothing refused was delivered');
+  // A failed delivery is said to have failed.
+  box.status = 500;
+  const failed = await contact(s, '192.0.2.83');
+  assert.equal(failed.status, 502);
+  assert.equal(JSON.parse(failed.body).error, 'Not sent. Try again later.');
+  await stop(s);
+  for (const part of ['Sam Mixer', 'sam@example.test', '6R departures', 'test-token', 'spam.example']) assert.ok(!output.includes(part), `the log holds nothing of the message: ${part}`);
+  assert.doesNotMatch(output, /contact/i);
+});
+
+test('contact: the 4th message in 15 minutes from one network is refused, with the wait', async (t) => {
+  const box = await mailbox(t);
+  const s = await server(t, { CONTACT_URL: box.url });
+  for (let i = 0; i < 3; i++) assert.equal((await contact(s, `2001:db8:5:6::${i + 1}`)).status, 200);
+  const fourth = await contact(s, '2001:db8:5:6::9');
+  assert.equal(fourth.status, 429);
+  assert.ok(Number(fourth.headers['retry-after']) > 800);
+  assert.equal(JSON.parse(fourth.body).error, 'Too many messages. Try again later.');
+  assert.equal((await contact(s, '192.0.2.84')).status, 200, 'another network is not held back');
+  assert.equal(box.got.length, 4);
+  assert.equal(box.got[0].headers.authorization, undefined, 'no token set, none sent');
+});
+
+test('contact: a wrong Origin is refused in public mode, and behind the password it needs the cookie', async (t) => {
+  const box = await mailbox(t);
+  const s = await server(t, { CONTACT_URL: box.url, PASSWORD: 'quiet-on-set' });
+  const https = { 'x-forwarded-proto': 'https' };
+  assert.equal((await contact(s, '192.0.2.85', note, { ...https, origin: 'https://evil.example' })).status, 403);
+  assert.equal((await contact(s, '192.0.2.85', note, https)).status, 401, 'no message without the cookie');
+  assert.equal((await s.request('/api/contact', { 'cf-connecting-ip': '192.0.2.85' })).status, 401, 'nor whether the form is on');
+  const right = await s.request('/', { ...https, 'cf-connecting-ip': '192.0.2.85', 'content-type': 'application/x-www-form-urlencoded' }, 'POST', undefined, 'password=quiet-on-set');
+  const cookie = right.headers['set-cookie'][0].split(';')[0];
+  assert.equal((await contact(s, '192.0.2.85', note, { ...https, cookie, origin: 'https://evil.example' })).status, 403);
+  assert.equal((await contact(s, '192.0.2.85', note, { ...https, cookie })).status, 200);
+  assert.equal(box.got.length, 1);
+});

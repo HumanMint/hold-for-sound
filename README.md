@@ -34,6 +34,8 @@ All optional, as environment variables:
 - `ADSB_LOL_DAY`: how many adsb.lol requests the server makes in a day before it pauses.
 - `ADSB_LOL_WEEK`: the same, over 7 days.
 - `ADSB_LOL_MONTH`: the same, over 30 days.
+- `CONTACT_URL`: where the contact form's messages are posted, as JSON; without it, there is no contact form.
+- `CONTACT_TOKEN`: sent with each message to `CONTACT_URL` as `Authorization: Bearer`.
 - `RECEIVER`: the URL of an ADS-B receiver's `aircraft.json`, whose aircraft are added to the feed.
 - `PUBLIC_HOST`: public mode: the host name to answer to, behind a proxy such as Cloudflare, listening on loopback only and with tighter limits.
 - `OWNER_PORT`: in public mode, a loopback port that serves the traffic counters.

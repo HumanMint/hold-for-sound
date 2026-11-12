@@ -2,8 +2,8 @@
 // which browsers can't call directly. All prediction happens in the browser.
 // Two things are off unless their environment variable is set: PASSWORD puts everything behind an
 // access password (access.js), and RECEIVER adds an ADS-B receiver of your own to the feeds
-// (receiver.js). A third, LOG_DIR, keeps the sessions that people choose to share (log.js). Traffic is
-// always counted (stats.js).
+// (receiver.js). A third, LOG_DIR, keeps the sessions that people choose to share (log.js). A fourth,
+// CONTACT_URL, is where the contact form's messages go (contact.js). Traffic is always counted (stats.js).
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -19,6 +19,7 @@ import { activity } from './activity.js';
 import { consent } from './consent.js';
 import { retryAfter } from './public/feed.js';
 import { cadence, FAST_S, TAXIED_S } from './cadence.js';
+import { check, limits, webhook, MAX_BODY } from './contact.js';
 
 const PORT = process.env.PORT || 8787;
 const RADIUS_NM = 30;
@@ -37,6 +38,11 @@ const log = createLog(process.env.LOG_DIR, PUBLIC_HOST ? { sessionMax: 32 * 1024
 const seen = traffic();
 const activitySeen = activity();
 const sharing = consent();
+// The contact form is on only with somewhere to send its messages. They go one at a time, like the
+// other upstream calls.
+const deliver = process.env.CONTACT_URL && webhook({ url: process.env.CONTACT_URL, token: process.env.CONTACT_TOKEN, site: PUBLIC_HOST || 'local' });
+const contactLine = queue(1000);
+const contacts = limits();
 
 // Per client address, the distinct keys it used in the last `ms`: a new one past `max` is refused, and
 // the answer is how many seconds until one frees up (0 when allowed).
@@ -90,7 +96,7 @@ setInterval(() => {
   sharing.prune();
   seen.prune();
   forgetLookups();
-  for (const limit of [places, searches, grantBytes, clientBytes]) limit.sweep();
+  for (const limit of [places, searches, grantBytes, clientBytes, contacts]) limit.sweep();
   for (const [ip, hit] of callers) if (Date.now() - hit.at >= MIN) callers.delete(ip);
   forgetAnswers();
 }, MIN).unref();
@@ -451,7 +457,7 @@ async function handle(req, res) {
         return json(200, { ok: true });
       }
       // A POST to the page itself is the password form, accepted only when there is a password.
-      const upload = req.method === 'POST' && (['/api/log', '/api/sharing'].includes(url.pathname) || (admit && url.pathname === '/'));
+      const upload = req.method === 'POST' && (['/api/log', '/api/sharing', '/api/contact'].includes(url.pathname) || (admit && url.pathname === '/'));
       if (req.method !== 'GET' && !upload) {
         seen.count('refused');
         res.setHeader('connection', 'close');
@@ -572,6 +578,30 @@ async function handle(req, res) {
       if (text == null) res.setHeader('connection', 'close'); // too long: the rest of it is not read
       const { status, ...answer } = log.request(req.method, text);
       return json(status, answer);
+    }
+    // The contact form (contact.js). Nothing of a message is logged or kept: it is checked and handed on.
+    if (url.pathname === '/api/contact') {
+      if (req.method !== 'POST') return json(200, { on: !!deliver });
+      if (!deliver) return json(404, { error: 'Contact form is off.' });
+      // Outside public mode too, a browser may post only from this page's own address (or a proxy's).
+      const from = req.headers.origin?.replace(/^https?:\/\//, '');
+      if (from && from !== req.headers.host && from !== req.headers['x-forwarded-host']) return json(403, { error: 'Same-origin requests only.' });
+      if (req.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/x-www-form-urlencoded') return json(415, { error: 'Form posts only.' });
+      const text = await body(req, MAX_BODY);
+      if (text == null) {
+        res.setHeader('connection', 'close'); // too long: the rest of it is not read
+        return json(413, { error: 'Message too long.' });
+      }
+      const { message, error } = check(text);
+      if (error) return json(400, { error });
+      const wait = contacts.take(who);
+      if (wait) return refuse(wait, 'Too many messages. Try again later.');
+      try {
+        await contactLine(() => deliver(message));
+      } catch {
+        return json(502, { error: 'Not sent. Try again later.' });
+      }
+      return json(200, { ok: true });
     }
     if (url.pathname === '/api/geocode') {
       seen.count('api');
