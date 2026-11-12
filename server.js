@@ -608,14 +608,18 @@ async function handle(req, res) {
       if (error) return json(400, { error });
       // The address the limits count, before an IPv6 one is taken as its /64; only a real one.
       if (SITEKEY && isIP(address)) message.ip = address;
-      const wait = contacts.take(who);
+      const at = Date.now();
+      const wait = contacts.take(who, at);
       if (wait === null) return json(503, { error: 'Not sent. Try again later.' });
       if (wait) return refuse(wait, 'Too many messages. Try again later.');
       // A page that has gone, or waited past its time, before this one's turn is not sent for.
       const sent = await sendContact(message, { arrived, gone: () => gone || req.socket.destroyed }).catch(() => 'failed');
       if (sent === 'sent') return json(200, { ok: true });
       if (sent === 'unconfirmed') return json(504, { error: 'Delivery unconfirmed' });
-      if (sent === 'unchecked') return json(400, { error: UNCHECKED });
+      if (sent === 'unchecked') {
+        contacts.release(at); // a failed check does not spend everyone's day
+        return json(400, { error: UNCHECKED });
+      }
       return json(sent === 'dropped' ? 503 : 502, { error: 'Not sent. Try again later.' });
     }
     if (url.pathname === '/api/geocode') {

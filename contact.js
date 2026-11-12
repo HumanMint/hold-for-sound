@@ -41,9 +41,11 @@ export function check(text, { checked = false } = {}) {
   return { message: { name, email, category, message, token } };
 }
 
-// Per client network, `perClient` messages in `clientMs`, and `perDay` a day from everyone. take(who)
-// is 0 when this one may go (and counts it), the seconds until one may, or null when its time cannot
-// be saved (it is not counted, and must not go).
+// Per client network, `perClient` messages in `clientMs`, and `perDay` a day from everyone. take(who, at)
+// is 0 when this one may go (and counts it at `at`), the seconds until one may, or null when its time
+// cannot be saved (it is not counted, and must not go). release(at) gives the day's place back to a
+// message the check refused, so failed checks cannot spend everyone's day; the network's count stays.
+// sweep() forgets the day's times once they are a day old, on disk too.
 // The day's send times, and nothing else (no sender, address or network), are kept in `file` when
 // there is one, so a restart gives nothing back: written whole or not at all, a file that cannot be
 // read or understood counts as the day spent, and a missing one is a fresh start. The per-network
@@ -78,8 +80,7 @@ export function limits({ perClient = 3, clientMs = 15 * MIN, perDay = 30, clock 
     }
   }
   return {
-    take(who) {
-      const now = clock();
+    take(who, now = clock()) {
       drop(all, DAY, now);
       const mine = clients.get(who) ?? [];
       drop(mine, clientMs, now);
@@ -98,9 +99,18 @@ export function limits({ perClient = 3, clientMs = 15 * MIN, perDay = 30, clock 
       clients.set(who, [...mine, now]);
       return 0;
     },
+    release(at) {
+      const i = all.indexOf(at);
+      if (i < 0) return;
+      all.splice(i, 1);
+      save();
+    },
     sweep() {
       const now = clock();
       for (const [who, times] of clients) if ((drop(times, clientMs, now), !times.length)) clients.delete(who);
+      const was = all.length;
+      drop(all, DAY, now);
+      if (all.length !== was) save();
     },
   };
 }

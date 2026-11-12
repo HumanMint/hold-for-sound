@@ -213,3 +213,24 @@ test('a send whose time cannot be saved is refused, and not counted', { skip: pr
   await chmod(dir, 0o700);
   for (let i = 0; i < 3; i++) assert.equal(limit.take('a'), 0, 'the refused one did not count');
 });
+
+test('a message the check refused gives the day\'s place back, not the network\'s; a day-old time is forgotten, on disk too', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'hfs-contact-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'contact.json');
+  let now = 5_000_000;
+  const limit = limits({ clock: () => now, file, perDay: 2 });
+  for (let i = 0; i < 5; i++) {
+    const at = ++now;
+    assert.equal(limit.take(`bot${i}`, at), 0, 'failed checks never fill the day');
+    limit.release(at);
+  }
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).sent.length, 0);
+  for (let i = 0; i < 3; i++) limit.release(now); // nothing taken at that time: no change
+  assert.equal(limit.take('bot0', ++now), 0);
+  assert.equal(limit.take('bot0', ++now), 0);
+  assert.ok(limit.take('bot0', ++now) > 0, 'the network still counts every attempt');
+  now += 24 * 3600_000;
+  limit.sweep();
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).sent.length, 0, 'a day later the times are gone from the file');
+});

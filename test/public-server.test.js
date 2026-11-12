@@ -973,14 +973,21 @@ test('contact: with a Turnstile site key, the check is required, its token and t
   assert.equal(missing.status, 400);
   assert.equal(JSON.parse(missing.body).error, 'Complete the check and try again.');
   assert.equal((await contact(s, '192.0.2.92', { ...note, 'cf-turnstile-response': 'x'.repeat(2049) })).status, 400);
+  // A check the receiving end refuses does not spend the day's 30 for everyone else.
+  box.status = 400;
+  for (let i = 0; i < 31; i++) {
+    const refused = await contact(s, `198.51.100.${i + 1}`, { ...note, 'cf-turnstile-response': token });
+    assert.equal(refused.status, 400, `failed check ${i + 1}`);
+  }
+  box.status = 200;
+  assert.equal((await contact(s, '203.0.113.50', { ...note, 'cf-turnstile-response': token })).status, 200, 'a real visitor still gets through');
   assert.equal((await contact(without, '192.0.2.92', { ...note, 'cf-turnstile-response': token })).status, 404, 'no form there at all');
   // The receiver's 400 is a failed check.
   box.status = 400;
   const failed = await contact(s, '192.0.2.93', { ...note, 'cf-turnstile-response': token });
   assert.equal(failed.status, 400);
   assert.equal(JSON.parse(failed.body).error, 'Complete the check and try again.');
-  assert.equal(box.got.length, 2);
-  assert.equal(box.got[1].body.ip, '192.0.2.93');
+  assert.equal(box.got.at(-1).body.ip, '192.0.2.93');
 });
 
 test('contact: without a site key the check\'s field is refused, and no address is relayed', async (t) => {
