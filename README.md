@@ -36,6 +36,7 @@ All optional, as environment variables:
 - `ADSB_LOL_MONTH`: the same, over 30 days.
 - `CONTACT_URL`: where the contact form's messages are posted, as JSON; without it, there is no contact form.
 - `CONTACT_TOKEN`: sent with each message to `CONTACT_URL` as `Authorization: Bearer`.
+- `CONTACT_SITEKEY`: a Cloudflare Turnstile site key. The contact form then shows Turnstile's check, loaded when the form is first opened, and each message adds `token` (its response) and `ip` (the sender's address) to the JSON for `CONTACT_URL` to verify; a 400 from there tells the sender to complete the check again.
 - `RECEIVER`: the URL of an ADS-B receiver's `aircraft.json`, whose aircraft are added to the feed.
 - `PUBLIC_HOST`: public mode: the host name to answer to, behind a proxy such as Cloudflare, listening on loopback only and with tighter limits.
 - `OWNER_PORT`: in public mode, a loopback port that serves the traffic counters.

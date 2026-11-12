@@ -3,24 +3,29 @@
 // Delivery is one function, so the way messages leave can change without touching the rest.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { WAIT_MS } from './public/contact-core.js';
+import { UNCHECKED, WAIT_MS } from './public/contact-core.js';
+
+export { UNCHECKED };
 
 const MIN = 60_000;
 const DAY = 24 * 60 * MIN;
 export const MAX_BODY = 16 * 1024;
 export const CATEGORIES = ['feedback', 'inquiry', 'general'];
 const FIELDS = ['name', 'email', 'category', 'message', 'website'];
+export const CHECK_FIELD = 'cf-turnstile-response'; // the Turnstile check's answer, when there is one
 const CONTROL = /\p{Cc}/u;
 const length = (text) => [...text].length;
 
-// A urlencoded body to { message } or { error }. Only the form's fields, each exactly once. The
-// message is { name, email, category, message }, trimmed, its line breaks as \n.
+// A urlencoded body to { message } or { error }. Only the form's fields, each exactly once, with the
+// check's answer among them exactly when `checked` (CONTACT_SITEKEY is set). The message is
+// { name, email, category, message }, trimmed, its line breaks as \n, and the answer as `token`.
 // shortcut: MAX_BODY is percent-encoded bytes, so a long message in a non-Latin script can be refused
 // as too long before its 5,000 characters.
-export function check(text) {
+export function check(text, { checked = false } = {}) {
   const form = new URLSearchParams(text ?? '');
   const keys = [...form.keys()];
-  if (keys.length !== FIELDS.length || !FIELDS.every((field) => keys.filter((key) => key === field).length === 1)) return { error: 'Unexpected form fields.' };
+  const fields = checked ? [...FIELDS, CHECK_FIELD] : FIELDS;
+  if (keys.length !== fields.length || !fields.every((field) => keys.filter((key) => key === field).length === 1)) return { error: checked && !keys.includes(CHECK_FIELD) ? UNCHECKED : 'Unexpected form fields.' };
   if (form.get('website') !== '') return { error: 'Not sent.' };
   const name = form.get('name').trim();
   const email = form.get('email').trim();
@@ -30,7 +35,10 @@ export function check(text) {
   if (email.length > 254 || CONTROL.test(email) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: 'Enter a valid email.' };
   if (!CATEGORIES.includes(category)) return { error: 'Choose a category.' };
   if (length(message) < 10 || length(message) > 5000 || CONTROL.test(message.replace(/[\n\t]/g, ''))) return { error: 'Message: 10 to 5,000 characters.' };
-  return { message: { name, email, category, message } };
+  if (!checked) return { message: { name, email, category, message } };
+  const token = form.get(CHECK_FIELD);
+  if (!token || token.length > 2048 || CONTROL.test(token)) return { error: UNCHECKED };
+  return { message: { name, email, category, message, token } };
 }
 
 // Per client network, `perClient` messages in `clientMs`, and `perDay` a day from everyone. take(who)
@@ -99,8 +107,8 @@ export function limits({ perClient = 3, clientMs = 15 * MIN, perDay = 30, clock 
 
 // Delivery by an HTTPS POST of JSON to `url`, with `token` as a bearer token when there is one, given
 // `ms` to answer. Only a 2xx is sent: a redirect is not followed (it would arrive as a GET with no
-// body), and anything else throws, without the message. No answer in time throws with `unconfirmed`,
-// since the message may have arrived.
+// body), and anything else throws, without the message, with the answer's `status`. No answer in time
+// throws with `unconfirmed`, since the message may have arrived.
 export function webhook({ url, token, site, fetch = globalThis.fetch }) {
   if (!/^https?:$/.test(new URL(url).protocol)) throw new Error('CONTACT_URL must be an http(s) URL.');
   return async (message, ms = 10_000) => {
@@ -114,7 +122,7 @@ export function webhook({ url, token, site, fetch = globalThis.fetch }) {
       const late = e?.name === 'TimeoutError' || e?.name === 'AbortError';
       throw Object.assign(new Error(late ? 'contact delivery did not answer in time' : 'contact delivery failed'), { unconfirmed: late });
     }
-    if (!(res.status >= 200 && res.status < 300)) throw new Error(`contact delivery answered ${res.status}`);
+    if (!(res.status >= 200 && res.status < 300)) throw Object.assign(new Error(`contact delivery answered ${res.status}`), { status: res.status });
   };
 }
 
@@ -124,8 +132,9 @@ export const TOTAL_MS = WAIT_MS - 5000;
 
 // Messages go one at a time through `line`, each within `totalMs` of its arrival. One whose sender has
 // gone (`gone()`) or whose time has run out before its turn is dropped unsent, and a delivery is given
-// only the time left, and none is begun with less than `leastMs` left. send(message, { arrived, gone }) resolves 'sent', 'dropped', 'unconfirmed' or
-// 'failed'; it rejects only when the line is full.
+// only the time left, and none is begun with less than `leastMs` left. send(message, { arrived, gone })
+// resolves 'sent', 'dropped', 'unconfirmed', 'unchecked' (delivery answered 400 to a message carrying
+// a check's token: the check failed) or 'failed'; it rejects only when the line is full.
 export function dispatch({ line, deliver, totalMs = TOTAL_MS, leastMs = 1000, clock = Date.now }) {
   return (message, { arrived = clock(), gone = () => false } = {}) => line(async () => {
     const left = arrived + totalMs - clock();
@@ -134,7 +143,8 @@ export function dispatch({ line, deliver, totalMs = TOTAL_MS, leastMs = 1000, cl
       await deliver(message, left);
       return 'sent';
     } catch (e) {
-      return e.unconfirmed ? 'unconfirmed' : 'failed';
+      if (e.unconfirmed) return 'unconfirmed';
+      return e.status === 400 && message?.token ? 'unchecked' : 'failed';
     }
   });
 }

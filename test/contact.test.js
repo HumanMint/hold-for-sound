@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { check, limits, webhook, dispatch, TOTAL_MS } from '../contact.js';
+import { check, limits, webhook, dispatch, TOTAL_MS, CHECK_FIELD, UNCHECKED } from '../contact.js';
 import { said, UNCONFIRMED, WAIT_MS } from '../public/contact-core.js';
 import { queue } from '../queue.js';
 
@@ -30,6 +30,19 @@ test('only the form\'s fields, each exactly once', () => {
   assert.ok(check(`${form(good)}&name=Again`).error);
   assert.ok(check('').error);
   assert.ok(check(null).error);
+});
+
+test('the check\'s answer: required, once, with a site key; refused without one', () => {
+  const token = 'XXXX.DUMMY.TOKEN.XXXX';
+  const checked = { checked: true };
+  assert.deepEqual(check(form({ ...good, [CHECK_FIELD]: token }), checked).message, { name: 'Sam Mixer', email: 'sam@example.test', category: 'feedback', message: 'The banner went clear too early.', token });
+  assert.equal(check(form(good), checked).error, UNCHECKED, 'missing');
+  assert.equal(check(form({ ...good, [CHECK_FIELD]: '' }), checked).error, UNCHECKED, 'empty');
+  assert.equal(check(form({ ...good, [CHECK_FIELD]: 'x'.repeat(2049) }), checked).error, UNCHECKED, 'too long');
+  assert.ok(check(form({ ...good, [CHECK_FIELD]: 'x'.repeat(2048) }), checked).message, '2,048 characters is fine');
+  assert.ok(check(`${form({ ...good, [CHECK_FIELD]: token })}&${CHECK_FIELD}=again`, checked).error, 'twice');
+  assert.equal(check(form({ ...good, [CHECK_FIELD]: token })).error, 'Unexpected form fields.', 'refused without a site key');
+  assert.equal(check(form(good)).message.token, undefined);
 });
 
 test('each field is checked as the form says', () => {
@@ -75,6 +88,18 @@ test('delivery posts JSON with the token, and anything but a 2xx is not sent', a
   await webhook({ url: 'https://mail.example.test/send', site: 'x', fetch })({});
   assert.equal(calls.at(-1).headers.authorization, undefined, 'no token, no header');
   assert.throws(() => webhook({ url: 'file:///etc/passwd', site: 'x', fetch }));
+  await deliver({ name: 'Sam', token: 'XXXX.DUMMY.TOKEN.XXXX', ip: '2001:db8::7' });
+  assert.deepEqual(JSON.parse(calls.at(-1).body), { name: 'Sam', token: 'XXXX.DUMMY.TOKEN.XXXX', ip: '2001:db8::7', site: 'local' }, 'the check\'s token and the address go with it');
+});
+
+test('a 400 from delivery is a failed check only for a message carrying a token', async () => {
+  const no = () => Promise.reject(Object.assign(new Error('contact delivery answered 400'), { status: 400 }));
+  const send = dispatch({ line: queue(0), deliver: no, totalMs: 1000, leastMs: 20 });
+  assert.equal(await send({ token: 't' }), 'unchecked');
+  assert.equal(await send({}), 'failed');
+  const down = dispatch({ line: queue(0), deliver: () => Promise.reject(Object.assign(new Error('x'), { status: 500 })), totalMs: 1000, leastMs: 20 });
+  assert.equal(await down({ token: 't' }), 'failed');
+  assert.equal(said({ status: 400, ok: false, headers: new Headers() }, { error: UNCHECKED }), 'Complete the check and try again.');
 });
 
 test('the page says Delivery unconfirmed when no answer came, or a gateway gave up waiting', () => {

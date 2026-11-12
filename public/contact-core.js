@@ -5,6 +5,8 @@ import { retryAfter, retryIn } from './feed.js?v=3';
 
 export const WAIT_MS = 20_000; // how long the page waits for an answer; the server answers well within it
 export const UNCONFIRMED = 'Delivery unconfirmed';
+export const UNCHECKED = 'Complete the check and try again.'; // also the server's word for a failed check
+export const CHECK_MISSING = "Check didn't load.";
 
 export function said(res, answer = {}) {
   // 504 is the server's own "no answer from delivery"; 524 is a proxy's, which gave up waiting on it.

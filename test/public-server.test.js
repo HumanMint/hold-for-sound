@@ -864,7 +864,8 @@ const contact = (s, ip, fields = note, more = {}) => s.request('/api/contact', {
 
 test('contact: without CONTACT_URL the form is off', async (t) => {
   const s = await server(t);
-  assert.deepEqual(JSON.parse((await s.request('/api/contact')).body), { on: false });
+  assert.deepEqual(JSON.parse((await s.request('/api/contact')).body), { on: false, sitekey: null });
+  assert.doesNotMatch((await s.request('/')).headers['content-security-policy'], /cloudflare/, 'no Turnstile in the CSP');
   assert.equal((await contact(s, '192.0.2.80')).status, 404);
   assert.match((await s.request('/')).body, /contact-form\.js/);
   assert.doesNotMatch((await s.request('/')).body, /Contact me/, 'the button comes only from the script, once the server says it is on');
@@ -888,7 +889,7 @@ test('contact: a good message reaches the stand-in with the token, and nothing o
   let output = '';
   s.child.stdout.on('data', (chunk) => output += chunk);
   s.child.stderr.on('data', (chunk) => output += chunk);
-  assert.deepEqual(JSON.parse((await s.request('/api/contact')).body), { on: true });
+  assert.deepEqual(JSON.parse((await s.request('/api/contact')).body), { on: true, sitekey: null });
   // A page sharing its session, with a region for activity.js, sends a message.
   const region = { 'x-hfs-country': 'US', 'x-hfs-city': 'Burbank', 'x-hfs-lat': '34.2', 'x-hfs-lon': '-118.3' };
   const g = JSON.parse((await s.ask('192.0.2.81', null, region)).body);
@@ -935,6 +936,64 @@ test('contact: a good message reaches the stand-in with the token, and nothing o
   await stop(s);
   for (const part of ['Sam Mixer', 'sam@example.test', '6R departures', 'test-token', 'spam.example']) assert.ok(!output.includes(part), `the log holds nothing of the message: ${part}`);
   assert.doesNotMatch(output, /contact/i);
+});
+
+test('contact: with a Turnstile site key, the check is required, its token and the address are relayed, and the CSP allows it', async (t) => {
+  const box = await mailbox(t);
+  const sitekey = '1x00000000000000000000AA';
+  const s = await server(t, { CONTACT_URL: box.url, CONTACT_SITEKEY: sitekey });
+  const without = await server(t);
+  assert.deepEqual(JSON.parse((await s.request('/api/contact')).body), { on: true, sitekey });
+  // The CSP: Turnstile's host for scripts and frames, and every other directive as it was.
+  const policy = (csp) => Object.fromEntries(csp.split(';').map((d) => d.trim().split(/\s+/)).map(([name, ...values]) => [name, values]));
+  const page = await s.request('/');
+  const csp = policy(page.headers['content-security-policy']);
+  const before = policy((await without.request('/')).headers['content-security-policy']);
+  assert.deepEqual(csp['script-src'], [...before['script-src'], 'https://challenges.cloudflare.com']);
+  assert.deepEqual(csp['frame-src'], ['https://challenges.cloudflare.com']);
+  const rest = ({ 'script-src': _, 'frame-src': __, ...others }) => others;
+  assert.deepEqual(rest(csp), rest(before), 'everything else kept');
+  assert.equal(before['frame-src'], undefined);
+  assert.ok(!page.headers['content-security-policy'].includes("'unsafe-eval'"));
+  assert.ok(!csp['script-src'].includes("'unsafe-inline'"));
+  // Nothing on the page itself asks Cloudflare for anything: only contact-form.js knows the address,
+  // and it loads it when the dialog is opened.
+  assert.doesNotMatch(page.body, /challenges\.cloudflare\.com/);
+  const script = await s.request('/contact-form.js');
+  const [opening] = script.body.match(/addEventListener\('click', \(\) => \{[^]*?\}\);/);
+  assert.match(opening, /showCheck\(\)/, 'loaded on opening the dialog');
+  assert.equal(script.body.match(/turnstile\(\)/g).length, 1, 'and nowhere else');
+  assert.doesNotMatch(script.body.slice(script.body.indexOf("fetch('api/contact')\n")), /turnstile|showCheck/, 'not on load');
+
+  const token = 'XXXX.DUMMY.TOKEN.XXXX';
+  assert.equal((await contact(s, '2001:db8:7:8::1234', { ...note, 'cf-turnstile-response': token })).status, 200);
+  const { website, ...fields } = note;
+  assert.deepEqual(box.got[0].body, { ...fields, token, ip: '2001:db8:7:8::1234', site: 'example.test' }, 'the address before /64 grouping');
+  const missing = await contact(s, '192.0.2.92');
+  assert.equal(missing.status, 400);
+  assert.equal(JSON.parse(missing.body).error, 'Complete the check and try again.');
+  assert.equal((await contact(s, '192.0.2.92', { ...note, 'cf-turnstile-response': 'x'.repeat(2049) })).status, 400);
+  assert.equal((await contact(without, '192.0.2.92', { ...note, 'cf-turnstile-response': token })).status, 404, 'no form there at all');
+  // The receiver's 400 is a failed check.
+  box.status = 400;
+  const failed = await contact(s, '192.0.2.93', { ...note, 'cf-turnstile-response': token });
+  assert.equal(failed.status, 400);
+  assert.equal(JSON.parse(failed.body).error, 'Complete the check and try again.');
+  assert.equal(box.got.length, 2);
+  assert.equal(box.got[1].body.ip, '192.0.2.93');
+});
+
+test('contact: without a site key the check\'s field is refused, and no address is relayed', async (t) => {
+  const box = await mailbox(t);
+  const s = await server(t, { CONTACT_URL: box.url });
+  const refused = await contact(s, '192.0.2.94', { ...note, 'cf-turnstile-response': 'XXXX.DUMMY.TOKEN.XXXX' });
+  assert.equal(refused.status, 400);
+  assert.equal((await contact(s, '192.0.2.94')).status, 200);
+  assert.equal(box.got.length, 1);
+  assert.deepEqual(Object.keys(box.got[0].body), ['name', 'email', 'category', 'message', 'site']);
+  box.status = 400;
+  const failed = await contact(s, '192.0.2.95');
+  assert.equal(failed.status, 502, 'a 400 without a check is not a failed check');
 });
 
 test('contact: a page that has gone before its message\'s turn is not sent for', async (t) => {

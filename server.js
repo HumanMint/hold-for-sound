@@ -8,6 +8,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { isIP } from 'node:net';
 import { execFileSync } from 'node:child_process';
 import { queue } from './queue.js';
 import { createHash } from 'node:crypto';
@@ -19,7 +20,7 @@ import { activity } from './activity.js';
 import { consent } from './consent.js';
 import { retryAfter } from './public/feed.js';
 import { cadence, FAST_S, TAXIED_S } from './cadence.js';
-import { check, limits, webhook, dispatch, MAX_BODY } from './contact.js';
+import { check, limits, webhook, dispatch, MAX_BODY, UNCHECKED } from './contact.js';
 
 const PORT = process.env.PORT || 8787;
 const RADIUS_NM = 30;
@@ -198,7 +199,10 @@ if (STATE) {
 }
 // The contact form is on only with somewhere to send its messages. They go one at a time, like the
 // other upstream calls, each answered within TOTAL_MS of its arrival (contact.js). The day's send
-// times are kept beside the adsb.lol budget.
+// times are kept beside the adsb.lol budget. With CONTACT_SITEKEY (a Cloudflare Turnstile site key),
+// the page shows Turnstile's check, and each message carries its token, and the sender's IP address,
+// for delivery to verify.
+const SITEKEY = (process.env.CONTACT_URL && process.env.CONTACT_SITEKEY) || null;
 const deliver = process.env.CONTACT_URL && webhook({ url: process.env.CONTACT_URL, token: process.env.CONTACT_TOKEN, site: PUBLIC_HOST || 'local' });
 const contactLine = queue(1000);
 const contacts = limits({ file: deliver && STATE_DIR ? join(STATE_DIR, 'contact.json') : undefined });
@@ -438,7 +442,8 @@ async function handle(req, res) {
     const grant = sharing.get(req.headers['x-hfs-share']);
     // cloudflared supplies cf-connecting-ip. The public instance accepts loopback connections only.
     // Every per-client limit counts an IPv6 client by its /64 (stats.js).
-    const who = network(PUBLIC_HOST ? (req.headers['cf-connecting-ip'] || 'local') : client(req));
+    const address = PUBLIC_HOST ? (req.headers['cf-connecting-ip'] || 'local') : client(req);
+    const who = network(address);
     // DELETE api/sharing?closing: the page is closing, and its grant goes a minute after its last upload.
     // Only from the grant's own client address; switching sharing off works from anywhere.
     const withdraw = () => (url.searchParams.has('closing') ? sharing.close(req.headers['x-hfs-share'], who) : sharing.stop(req.headers['x-hfs-share']));
@@ -446,7 +451,9 @@ async function handle(req, res) {
       res.setHeader('referrer-policy', 'strict-origin');
       res.setHeader('x-content-type-options', 'nosniff');
       res.setHeader('permissions-policy', 'camera=(), microphone=(self), geolocation=(self)');
-      res.setHeader('content-security-policy', `default-src 'self'; script-src 'self' 'sha256-fOyL/EgYifGLDk26qXFnthKltRdK5PQBM7j6dKRHmCU='${LOGIN_HASHES}; style-src 'self' 'unsafe-inline'; img-src 'self' https://tile.openstreetmap.org; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
+      // Turnstile, when the contact form has it, is a script and a frame from Cloudflare.
+      const turnstile = SITEKEY ? ' https://challenges.cloudflare.com' : '';
+      res.setHeader('content-security-policy', `default-src 'self'; script-src 'self' 'sha256-fOyL/EgYifGLDk26qXFnthKltRdK5PQBM7j6dKRHmCU='${LOGIN_HASHES}${turnstile}; style-src 'self' 'unsafe-inline'; img-src 'self' https://tile.openstreetmap.org; connect-src 'self';${SITEKEY ? ` frame-src${turnstile};` : ''} object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
       if (!req.url.startsWith('/') || req.url.startsWith('//')) return json(400, { error: 'not an address' });
       if (req.headers.host !== PUBLIC_HOST) return json(404, { error: 'not found' });
       if (req.method !== 'GET' && req.headers.origin !== `https://${PUBLIC_HOST}`) return json(403, { error: 'Same-origin requests only.' });
@@ -586,7 +593,7 @@ async function handle(req, res) {
       const arrived = Date.now();
       let gone = false;
       res.once('close', () => { gone = true; });
-      if (req.method !== 'POST') return json(200, { on: !!deliver });
+      if (req.method !== 'POST') return json(200, { on: !!deliver, sitekey: SITEKEY });
       if (!deliver) return json(404, { error: 'Contact form is off.' });
       // Outside public mode too, a browser may post only from this page's own address (or a proxy's).
       const from = req.headers.origin?.replace(/^https?:\/\//, '');
@@ -597,8 +604,10 @@ async function handle(req, res) {
         res.setHeader('connection', 'close'); // too long: the rest of it is not read
         return json(413, { error: 'Message too long.' });
       }
-      const { message, error } = check(text);
+      const { message, error } = check(text, { checked: !!SITEKEY });
       if (error) return json(400, { error });
+      // The address the limits count, before an IPv6 one is taken as its /64; only a real one.
+      if (SITEKEY && isIP(address)) message.ip = address;
       const wait = contacts.take(who);
       if (wait === null) return json(503, { error: 'Not sent. Try again later.' });
       if (wait) return refuse(wait, 'Too many messages. Try again later.');
@@ -606,6 +615,7 @@ async function handle(req, res) {
       const sent = await sendContact(message, { arrived, gone: () => gone || req.socket.destroyed }).catch(() => 'failed');
       if (sent === 'sent') return json(200, { ok: true });
       if (sent === 'unconfirmed') return json(504, { error: 'Delivery unconfirmed' });
+      if (sent === 'unchecked') return json(400, { error: UNCHECKED });
       return json(sent === 'dropped' ? 503 : 502, { error: 'Not sent. Try again later.' });
     }
     if (url.pathname === '/api/geocode') {
