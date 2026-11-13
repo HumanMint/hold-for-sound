@@ -446,3 +446,5 @@ footer p { max-width: 72ch; }
   .set-summary { grid-column: 1 / -1; grid-row: 2; }
   #change { grid-column: 2; grid-row: 1; }
 }
+
+#crew-confirm { width: min(28rem, calc(100% - 2rem)); }

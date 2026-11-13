@@ -79,6 +79,8 @@ While live aircraft are watched, the server asks Open-Meteo's free forecast API 
 
 **Listen with the microphone** compares what the set hears with the predictions. It learns the background, matches aircraft by their Doppler pitch or by when the noise rose, reports noise no tracked aircraft explains, and can tune the warning level after several aircraft. Every threshold is a guess. **Try it with demo sound** runs the same steps on made-up sound.
 
+**Crew link** in setup shares the watched coordinates, environment and warning level. Phones using it share the server's flight answer for the same place rounded to three decimals, saving flight-data calls each cadence period. A different saved set needs confirmation. Coordinates travel in the URL fragment, which is not sent with the page request; access keys and other query parameters are removed. Microphone learning stays on each device. The linked level becomes its manual warning setting; subsequent local learning can move it as usual.
+
 ## Privacy
 
 The sound is analysed in the browser and is never recorded, stored or sent. Settings stay in the browser. The location is asked for only when **Use my location** is pressed. The server holds addresses looked up, and IP addresses, in memory for up to a day, never on disk. Nothing else about a session is kept unless the visitor switches on **Share data with the developer**, which is offered only when `LOG_DIR` is set. [`public/about.html`](public/about.html) lists what is sent where.
