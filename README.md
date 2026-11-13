@@ -43,7 +43,7 @@ All optional, as environment variables:
 
 ## How it predicts
 
-Every 5 seconds the page asks for the aircraft within 30 nautical miles and steps each one's path forward 8 minutes, estimating the loudness at the set from the aircraft's size, distance, height and the building's insulation. An aircraft is listed when that estimate rises above the warning level.
+Every 5 seconds the page asks for the aircraft within 30 nautical miles and steps each one's path forward 8 minutes, estimating the loudness at the set from the aircraft's type, flight phase, direction, distance, height and the building's insulation. An aircraft is listed when that estimate rises above the warning level.
 
 The microphone choices keep separate learned observations: Outdoors, Indoors (windows shut), Warehouse (a converted or lightweight stage), and Soundstage (purpose-built). Existing saved choices keep their meanings.
 
@@ -61,6 +61,8 @@ The microphone choices keep separate learned observations: Outdoors, Indoors (wi
 
 In public mode the server asks the flight feed for a place every 10 seconds while an aircraft may matter soon (one that could come within about 10 km, or that is moving on the ground nearby), and once a minute while the sky is quiet, or every 30 seconds within 5 km of a runway; the page cannot ask faster. A quiet answer is trusted for 80 seconds (40 beside a runway), and Clear then says **Checked every 1:00** (or **0:30**): a takeoff the feed did not see on the ground can show up to that much later.
 
+Source levels use a small table of conservative type offsets, with engine and size fallbacks. Takeoff power falls to a guessed cutback level after climbing 450 m above the runway; other climbs, descents, approaches and rollout have separate levels. Jets gain an aft lobe strongest around 130° from the nose, propellers a broadside lobe, and helicopters a descent increment. Unknown direction uses the loudest lobe. Learned per-category microphone corrections still add to these levels.
+
 The loudness numbers are guesses, not measurements. Turns away from a runway are not foreseen, and aircraft that do not broadcast their position never appear.
 
 ## Listening
@@ -76,6 +78,7 @@ The sound is analysed in the browser and is never recorded, stored or sent. Sett
 - Flight data: [adsb.lol](https://adsb.lol), under the [Open Database License 1.0](https://opendatacommons.org/licenses/odbl/1-0/); [adsb.fi](https://adsb.fi), for non-commercial use only.
 - Address lookup and map: [OpenStreetMap](https://www.openstreetmap.org/copyright) (Nominatim and standard tiles), data under the Open Database License; use follows the [Nominatim](https://operations.osmfoundation.org/policies/nominatim/) and [tile](https://operations.osmfoundation.org/policies/tiles/) usage policies.
 - Elevation: [Open-Meteo](https://open-meteo.com/), under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). "Copernicus WorldDEM-90 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA".
+- Aircraft source offsets: [EASA certification noise levels](https://www.easa.europa.eu/en/domains/environment/easa-certification-noise-levels), jet workbook `MAdB_JETS_20261112_`, © European Union Aviation Safety Agency. [Reproduction is authorised with source acknowledgement unless otherwise stated](https://www.easa.europa.eu/copyright-disclaimer). The small derived table uses rounded nonnegative differences between maximum lateral/approach certification levels and the ERJ 170 family reference; EPNdB differences are only rough relative proxies, not measured dBA or a conversion to LAmax. Power and directional terms are independent uncalibrated guesses. ANP curves are not included: their terms require registered access and restrict use and redistribution.
 - Runways: [OurAirports](https://ourairports.com/data/), public domain.
 - The recording in `test/fixtures/` contains information from adsb.lol, under the Open Database License 1.0.
 

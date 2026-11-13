@@ -1,6 +1,8 @@
 // Pure prediction math, shared by the browser and `node --test`.
 // shortcut: every acoustic number here is an uncalibrated guess; replace with per-type noise data
-// (e.g. FAA AEDT noise-power-distance curves) once this has been compared against real sets.
+// Source terms live in source.js; properly licensed LAmax curves would improve its type offsets.
+
+import { source } from './source.js';
 
 const FT = 0.3048;
 const KT = 0.5144;
@@ -12,8 +14,6 @@ export const MAX_AGE_S = 60; // a position older than this is too old to extrapo
 // Whether a feed row says where the aircraft is: it has a position, and one no older than `maxAge` seconds.
 export const located = (ac, maxAge = MAX_AGE_S) => ac.lat != null && ac.lon != null && !(ac.seen_pos > maxAge);
 
-// Loudest level (dBA) heard 1000 ft from the aircraft, keyed by the size category its transponder reports.
-const SOURCE_DBA = { A1: 68, A2: 76, A3: 80, A4: 82, A5: 86, A6: 98, A7: 78 };
 export const CLASS_NAME = {
   A1: 'light aircraft',
   A2: 'small jet or turboprop',
@@ -104,13 +104,12 @@ function straight(ac, pos, alt0, vz, site) {
   const track = (ac.track ?? 0) * RAD;
   const selected = ac.nav_altitude_mcp == null ? null : ac.nav_altitude_mcp * FT - site.elevM;
   const toSelected = selected != null && (selected - alt0) * vz > 0; // only trust it if the aircraft is going that way
-  const boost = ac.category === 'A7' ? 0 : vz > 2.5 ? 4 : vz < -2.5 ? -4 : 0; // climbing is high power, descending near idle
   return {
     at: (age) => {
       // Climb or descend to the selected altitude when broadcast, otherwise level off after 2 min.
       let alt = alt0 + vz * (toSelected ? age : Math.min(age, 120));
       if (toSelected) alt = vz > 0 ? Math.min(alt, selected) : Math.max(alt, selected);
-      return { x: pos.x + speed * Math.sin(track) * age, y: pos.y + speed * Math.cos(track) * age, alt: Math.max(alt, 100), boost };
+      return { x: pos.x + speed * Math.sin(track) * age, y: pos.y + speed * Math.cos(track) * age, alt: Math.max(alt, 100), vx: speed * Math.sin(track), vy: speed * Math.cos(track), vz: alt <= 100 || (toSelected ? alt === selected : age >= 120) ? 0 : vz, speed, directionKnown: ac.track != null };
     },
   };
 }
@@ -170,7 +169,7 @@ function helicopter(ac, pos, alt0, vz, site, m) {
 // 30 kt in about 25 s. A level by type, and reverse thrust that some use and some do not, are unknown.
 const ROLLOUT_DECEL = 2; // m/s²
 const ROLLOUT_MS = [65, 15]; // m/s: as loud as the approach at the first, quiet below the second
-const ROLLOUT_DB = [-4, -14]; // boost at those speeds, and straight between them
+const ROLLOUT_DB = [-4, -14]; // source power adjustment at those speeds, and straight between them
 function rollout(lane, x0, y0, v0) {
   const fade = (v) => ROLLOUT_DB[0] + ((ROLLOUT_DB[1] - ROLLOUT_DB[0]) * (ROLLOUT_MS[0] - Math.min(v, ROLLOUT_MS[0]))) / (ROLLOUT_MS[0] - ROLLOUT_MS[1]);
   const stop = (v0 - ROLLOUT_MS[1]) / ROLLOUT_DECEL; // seconds until it is down to taxiing speed
@@ -178,7 +177,7 @@ function rollout(lane, x0, y0, v0) {
     const t = Math.max(0, age); // before the report it was here or nearer the threshold: here will do
     if (t > stop) return null;
     const gone = v0 * t - (ROLLOUT_DECEL * t * t) / 2;
-    return { x: x0 + lane.ux * gone, y: y0 + lane.uy * gone, alt: lane.up, boost: fade(v0 - ROLLOUT_DECEL * t) };
+    return { x: x0 + lane.ux * gone, y: y0 + lane.uy * gone, alt: lane.up, boost: fade(v0 - ROLLOUT_DECEL * t), phase: 'rollout', vx: lane.ux * (v0 - ROLLOUT_DECEL * t), vy: lane.uy * (v0 - ROLLOUT_DECEL * t), vz: 0 };
   };
 }
 
@@ -220,7 +219,7 @@ function landing(ac, pos, alt0, vz, site, runways) {
     at: (age) => {
       const gone = speed * age;
       if (gone >= toGo) return roll(age - toGo / speed);
-      return { x: pos.x + lane.ux * gone, y: pos.y + lane.uy * gone, alt: lane.up + (alt0 - lane.up) * (1 - gone / toGo), boost: -4 };
+      return { x: pos.x + lane.ux * gone, y: pos.y + lane.uy * gone, alt: lane.up + (alt0 - lane.up) * (1 - gone / toGo), phase: 'approach', vx: lane.ux * speed, vy: lane.uy * speed, vz: -(alt0 - lane.up) * speed / toGo };
     },
   };
 }
@@ -256,7 +255,7 @@ function takeoff(ac, pos, site, runways, alt0, m, heading) {
       if (!rolling && age < start) return null; // idling on the runway
       const t = Math.max(0, age - start);
       const gone = t < tClimb ? v0 * t + (accel * t * t) / 2 : v0 * tClimb + (accel * tClimb * tClimb) / 2 + climbSpeed * (t - tClimb);
-      return { x: pos.x + lane.ux * gone, y: pos.y + lane.uy * gone, alt: lane.up + climbRate * Math.max(0, t - tLiftoff), boost: 6 };
+      return { x: pos.x + lane.ux * gone, y: pos.y + lane.uy * gone, alt: lane.up + climbRate * Math.max(0, t - tLiftoff), phase: climbRate * Math.max(0, t - tLiftoff) < 450 ? 'takeoff' : 'cutback', vx: lane.ux * Math.min(climbSpeed, v0 + accel * t), vy: lane.uy * Math.min(climbSpeed, v0 + accel * t), vz: t > tLiftoff ? climbRate : 0 };
     },
   };
 }
@@ -304,7 +303,6 @@ export function predict(ac, site, { loss, floor, runways = [], landed = false, t
   if (!path) return null;
 
   const heli = ac.category === 'A7';
-  const source = (SOURCE_DBA[ac.category] ?? 76) + (trim[ac.category] ?? 0);
   const wall = heli ? loss * 0.8 : loss; // shortcut: uncalibrated rotor-thump allowance; replace with measured low-frequency losses
 
   const samples = [];
@@ -321,8 +319,7 @@ export function predict(ac, site, { loss, floor, runways = [], landed = false, t
       const km = dist / 1000;
       heardAt = t + dist / SOUND_MS;
       db =
-        source +
-        p.boost -
+        source(ac, p, trim) -
         20 * Math.log10(dist / 305) - // spreading, relative to the 1000 ft reference
         (3.5 * Math.min(km, 3) + Math.max(km - 3, 0)) - // air absorption
         8 * Math.max(0, 1 - Math.atan2(p.alt, ground) / RAD / 30) - // ground and buildings shield aircraft near the horizon

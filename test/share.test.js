@@ -236,7 +236,7 @@ test('a batch is what the server stores: the set by its coordinates, each poll w
 });
 
 // The listening panel hearing a jet over a 50 dB background for `seconds`, with the page warning at 60:
-// it is heard by its swell and filed as a pass about 85 s in. Everything the panel reports goes to `share`.
+// it is heard by its swell and filed after its louder aft tail has faded. Everything the panel reports goes to `share`.
 function listen(r, kind, seconds) {
   const reports = [];
   const core = createCore({ load: () => null, save() {}, send: (name, detail) => r.share.tune(detail), clock: () => r.now, report: (d) => (reports.push(d), r.share.heard(d)) });
@@ -262,11 +262,11 @@ function listen(r, kind, seconds) {
 test('the microphone is reported once a second, as levels and a coarse spectrum, with every pass', async () => {
   const r = rig();
   r.share.start();
-  const reports = listen(r, 'mic', 100);
+  const reports = listen(r, 'mic', 120);
   await r.share.flush();
 
   // The hook: one report for each second of audio, with that second's 8 columns and nothing of the next.
-  assert.ok(reports.length >= 98 && reports.length <= 100);
+  assert.ok(reports.length >= 118 && reports.length <= 120);
   assert.ok(reports.every((d, i) => !i || d.status.at - reports[i - 1].status.at === 1000));
   assert.ok(reports.every((d) => d.columns.length === 8 && d.demo === false && d.rate === RATE));
   assert.equal(reports.flatMap((d) => d.observations).length, 1);
@@ -293,7 +293,7 @@ test('the microphone is reported once a second, as levels and a coarse spectrum,
   assert.deepEqual([pass.hex, pass.how, pass.heard], ['aaa111', 'envelope', true]);
   // All of that is small: an hour of polls and listening like this is about a megabyte before it is compressed.
   const size = events.filter((e) => e.k !== 'spec').reduce((sum, e) => sum + JSON.stringify(e).length, 0);
-  assert.ok(size * 36 < 1_500_000, `${size} characters for 100 s`);
+  assert.ok(size * 30 < 1_500_000, `${size} characters for 120 s`);
 
   // The spectrogram itself is kept around the pass: from 30 s before the engine first expected the
   // jet until 30 s after it last did, as the engine's own columns, 8 a second.
@@ -315,9 +315,9 @@ test('the microphone is reported once a second, as levels and a coarse spectrum,
 test('nothing the demo sound produces is recorded as microphone data', async () => {
   const r = rig();
   r.share.start();
-  const reports = listen(r, 'demo', 100);
+  const reports = listen(r, 'demo', 120);
   await r.share.flush();
-  assert.ok(reports.length >= 98 && reports.every((d) => d.demo === true));
+  assert.ok(reports.length >= 118 && reports.every((d) => d.demo === true));
   assert.equal(reports.flatMap((d) => d.observations).length, 1, 'the demo did hear a pass');
   assert.ok(reports.some((d) => d.status.noise && d.status.expected.length), 'and all that would start a capture');
   // A mark is real whatever is being listened to, but there is no sound of the demo's to go with it.
