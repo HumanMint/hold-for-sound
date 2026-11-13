@@ -137,10 +137,11 @@ const airportsOf = (list) => [...new Set(list.map((w) => w.airport))].join(' and
 
 // Takeoffs that would be heard here before the feed may show them (predict.js), for the set and
 // settings in use. Worked out again only when one of those changes.
+let weather = null;
 let rolls = { key: '', list: [] };
 function takeoffs() {
-  const opts = { loss: ENVIRONMENTS[form.env.value].loss, floor: +form.floor.value, runways: site.runways, trim: tuned.trim };
-  const key = JSON.stringify([site.lat, site.lon, opts.loss, opts.floor, opts.trim]);
+  const opts = { loss: ENVIRONMENTS[form.env.value].loss, floor: +form.floor.value, runways: site.runways, trim: tuned.trim, weather: weather && Date.now() - weather.at <= 3600_000 ? weather : null, weatherAt: Date.now() };
+  const key = JSON.stringify([site.lat, site.lon, opts.loss, opts.floor, opts.trim, opts.weather]);
   if (rolls.key !== key) rolls = { key, list: unseen(site, opts) };
   return rolls.list;
 }
@@ -229,6 +230,7 @@ async function poll() {
     // shares one answer for up to 4 s, 10 s in public, a minute in public while the sky is quiet), so
     // every position is that much older than it says.
     const age = data.age ?? 0;
+    weather = data.weather ?? null;
     every = data.every ?? 0;
     for (const ac of data.ac) if (ac.seen_pos != null) ac.seen_pos += age;
     remember(moves, data.ac, now);
@@ -243,6 +245,8 @@ async function poll() {
       landed: sinceArriving(ac) < 180_000, // still rolling out or clearing the runway, not lining up
       trim: tuned.trim,
       motion: motion(moves.get(ac.hex)),
+      weather,
+      weatherAt: now,
     });
     // Every aircraft's whole path and which runway it is using, and the ones that will be heard. Both
     // include aircraft the feed has lost for as long as their last prediction still matters.
@@ -586,6 +590,7 @@ async function watch(mine) {
     if (example) data.name = example.dataset.name;
     const moved = !site || data.lat !== site.lat || data.lon !== site.lon;
     if (moved) {
+      weather = null;
       untune();
       lastData = polledAt = listedAt = every = 0;
       shown = null;

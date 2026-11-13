@@ -1,10 +1,11 @@
 // Pure prediction math, shared by the browser and `node --test`.
-// shortcut: every acoustic number here is an uncalibrated guess; replace with per-type noise data
-// Source terms live in source.js; properly licensed LAmax curves would improve its type offsets.
+// shortcut: every acoustic number here is an uncalibrated guess. The level at the set is the aircraft's
+// own (source.js), plus the weather (weather.js), less the path (propagate.js) and the building.
 
 import { source } from './source.js';
 import { engine } from './engine.js';
 import { propagation, elevation } from './propagate.js';
+import { weatherLevel } from './weather.js';
 
 const FT = 0.3048;
 const KT = 0.5144;
@@ -281,14 +282,14 @@ function takeoff(ac, pos, site, runways, alt0, m, heading) {
 // it, dist is the straight-line distance, db the predicted level. A helicopter's x/y are its straight
 // line, and its dist and db are what at least half its likely headings give. Pass floor: -Infinity to
 // get the path of an aircraft that is never audible.
-export function predict(ac, site, { loss, floor, runways = [], landed = false, trim = {}, maxAge = MAX_AGE_S, motion = null }) {
+export function predict(ac, site, { loss, floor, runways = [], landed = false, trim = {}, maxAge = MAX_AGE_S, motion = null, weather = null, weatherAt = null }) {
   if (!located(ac, maxAge)) return null; // no position, or too old to extrapolate
   const pos = local(ac, site);
   let path;
   if (ac.alt_baro === 'ground') {
     const [way, other] = ways(ac, motion);
     if (other != null) {
-      const heard = [way, other].map((h) => predict({ ...ac, true_heading: h, track: h }, site, { loss, floor, runways, landed, trim, maxAge, motion }));
+      const heard = [way, other].map((h) => predict({ ...ac, true_heading: h, track: h }, site, { loss, floor, runways, landed, trim, maxAge, motion, weather, weatherAt }));
       return heard.filter(Boolean).sort((a, b) => a.startS - b.startS || b.peakDb - a.peakDb)[0] ?? null;
     }
     path = landed ? landedRoll(ac, pos, site, runways, undefined, way) : takeoff(ac, pos, site, runways, undefined, motion, way);
@@ -323,7 +324,8 @@ export function predict(ac, site, { loss, floor, runways = [], landed = false, t
       const lateralM = ground; // instantaneous short segment: Doc 29 4.5.5 nearest-point geometry
       heardAt = t + dist / SOUND_MS;
       db =
-        source(ac, p, trim) -
+        source(ac, p, trim) +
+        weatherLevel(weather, { bearing: Math.atan2(p.x, p.y) / RAD, elevation: beta, distance: dist, altitude: p.alt }, weatherAt) -
         propagation(dist, beta, lateralM, kind) -
         wall;
       samples.push({ t, heardAt, x: p.x, y: p.y, alt: p.alt, dist, db });

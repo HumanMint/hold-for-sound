@@ -1068,3 +1068,42 @@ test('contact: a wrong Origin is refused in public mode, and behind the password
   assert.equal((await contact(s, '192.0.2.85', note, { ...https, cookie })).status, 200);
   assert.equal(box.got.length, 1);
 });
+
+test('live weather is rounded, cached through failure and uses the existing upstream counter', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'hfs-weather-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const mock = join(dir, 'fetch.mjs');
+  const calls = join(dir, 'weather-calls');
+  await writeFile(mock, `import { appendFileSync } from 'node:fs';
+    globalThis.fetch = async (url, options) => {
+      if (String(url).includes('/v1/forecast')) {
+        appendFileSync(${JSON.stringify(calls)}, JSON.stringify({url, agent:options.headers['user-agent']})+'\\n');
+        if (String(url).includes('latitude=12.347')) throw Error('offline');
+        return Response.json({hourly:{time:[Math.floor(Date.now()/1000)],temperature_2m:[20],temperature_80m:[19],wind_speed_10m:[5],wind_direction_10m:[0]}});
+      }
+      return Response.json({ac:[],now:Date.now()});
+    };`);
+  const { request, statsPort } = await server(t, { REPLAY: '', STATE_DIR: dir, TEST_WEATHER: '1', NODE_OPTIONS: `--import=${mock}` });
+  const first = JSON.parse((await request('/api/aircraft?lat=12.34567&lon=-65.4321')).body);
+  assert.equal(first.weather, null, 'weather never delays the first flight response');
+  for (let i = 0; i < 100; i++) {
+    const next = JSON.parse((await request('/api/aircraft?lat=12.34568&lon=-65.4322')).body);
+    if (next.weather) { assert.equal(next.weather.temperature_2m, 20); break; }
+    await new Promise(done => setTimeout(done, 10));
+    assert.ok(i < 99, 'background refresh completes');
+  }
+  const failed = '/api/aircraft?lat=12.3471&lon=-65.4321';
+  assert.equal(JSON.parse((await request(failed)).body).weather, null);
+  await new Promise(done => setTimeout(done, 1200));
+  for (let i = 0; i < 3; i++) assert.equal(JSON.parse((await request(failed)).body).weather, null);
+  const recorded = (await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(recorded.length, 2, 'one attempt per rounded place, including failure');
+  assert.equal(new URL(recorded[0].url).searchParams.get('latitude'), '12.346');
+  assert.equal(new URL(recorded[0].url).searchParams.get('longitude'), '-65.432');
+  assert.equal(recorded[0].agent, 'flight-noise-poc/0.1');
+  for (const lat of [13, 14, 15]) await request(`/api/aircraft?lat=${lat}&lon=-65.432`);
+  assert.equal((await request('/api/aircraft?lat=16&lon=-65.432')).status, 429, 'weather cannot bypass the place limit');
+  const stats = JSON.parse((await request('/api/stats', {}, 'GET', statsPort)).body);
+  assert.ok(stats.upstream >= 4, 'weather calls count alongside flight calls');
+  assert.equal('weather' in stats, false, 'stats shape is unchanged');
+});

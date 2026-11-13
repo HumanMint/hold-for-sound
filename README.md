@@ -69,6 +69,12 @@ The lateral-distance factor vanishes directly beneath the aircraft. Each time sa
 
 The loudness numbers are guesses, not measurements. Turns away from a runway are not foreseen, and aircraft that do not broadcast their position never appear.
 
+## Weather
+
+While live aircraft are watched, the server asks Open-Meteo's free forecast API for hourly wind at 10/80/120/180 m, temperature at 2/80/120/180 m, cloud cover, day/night, shortwave radiation and boundary-layer height. It sends only the set coordinates rounded to three decimals, caches each place for an hour including failures, and returns weather with the existing aircraft answer. Refreshes run in the background through a bounded queue; missing weather leaves predictions unchanged. Replay does not request weather.
+
+`public/weather.js` estimates stability from the temperature gradient, with wind/cloud/radiation as a fallback. Below 15° elevation, inversion adds up to 5 dB. The wind term adds no downwind gain because lateral attenuation already assumes mild downwind conditions. Upwind and sunny unstable conditions can remove at most 3 dB combined, only with weather no older than an hour, never below 100 m within 3 km of the set. The effect fades above 5° and within 1 km. These are uncalibrated guesses (`shortcut:` in the code), deliberately much smaller than measured acoustic shadows: forecast grid weather cannot establish a shadow at a microphone. No weather model here proves a Clear is safe.
+
 ## Listening
 
 **Listen with the microphone** compares what the set hears with the predictions. It learns the background, matches aircraft by their Doppler pitch or by when the noise rose, reports noise no tracked aircraft explains, and can tune the warning level after several aircraft. Every threshold is a guess. **Try it with demo sound** runs the same steps on made-up sound.
@@ -81,6 +87,7 @@ The sound is analysed in the browser and is never recorded, stored or sent. Sett
 
 - Flight data: [adsb.lol](https://adsb.lol), under the [Open Database License 1.0](https://opendatacommons.org/licenses/odbl/1-0/); [adsb.fi](https://adsb.fi), for non-commercial use only.
 - Address lookup and map: [OpenStreetMap](https://www.openstreetmap.org/copyright) (Nominatim and standard tiles), data under the Open Database License; use follows the [Nominatim](https://operations.osmfoundation.org/policies/nominatim/) and [tile](https://operations.osmfoundation.org/policies/tiles/) usage policies.
+- Weather: [Open-Meteo Forecast API](https://open-meteo.com/en/docs), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); free API for non-commercial use only (600 calls/minute, 5,000/hour, 10,000/day).
 - Elevation: [Open-Meteo](https://open-meteo.com/), under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). "Copernicus WorldDEM-90 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA".
 - Aircraft source offsets: [EASA certification noise levels](https://www.easa.europa.eu/en/domains/environment/easa-certification-noise-levels), jet workbook `MAdB_JETS_20261112_`, © European Union Aviation Safety Agency. [Reproduction is authorised with source acknowledgement unless otherwise stated](https://www.easa.europa.eu/copyright-disclaimer). The small derived table uses rounded nonnegative differences between maximum lateral/approach certification levels and the ERJ 170 family reference; EPNdB differences are only rough relative proxies, not measured dBA or a conversion to LAmax. Power and directional terms are independent uncalibrated guesses. ANP curves are not included: their terms require registered access and restrict use and redistribution.
 - Runways: [OurAirports](https://ourairports.com/data/), public domain.

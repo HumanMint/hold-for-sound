@@ -45,7 +45,7 @@ q { font-style: italic; }
   <li>If this site asks for a password, one cookie remembers that you entered it, for up to a year. No other cookies.</li>
   <li>Microphone sound is analysed in this browser. It is never recorded, stored or sent. Listening starts only when you press its button.</li>
   <li>Your device's location is asked for only when you press <b>Use my location</b>.</li>
-  <li>To find aircraft, the server sends the location, rounded to about 100 m, to adsb.lol (or adsb.fi), and to Open-Meteo for its elevation.</li>
+  <li>To find aircraft, the server sends the location, rounded to about 100 m, to adsb.lol (or adsb.fi), and to Open-Meteo for its elevation. While live aircraft are watched, the server also sends those rounded coordinates to Open-Meteo for weather, at most once an hour per cached place, including failed attempts.</li>
   <li>An address you type is sent to Nominatim (OpenStreetMap) to find it. Typed coordinates are not.</li>
   <li>Map images come from OpenStreetMap, which sees your IP address and the area shown.</li>
   <li>Traffic to this site passes through Cloudflare.</li>
@@ -71,6 +71,7 @@ q { font-style: italic; }
 <ul>
   <li>Flight data: <a href="https://adsb.lol">adsb.lol</a>, under the <a href="https://opendatacommons.org/licenses/odbl/1-0/">Open Database License (ODbL) 1.0</a>; <a href="https://adsb.fi">adsb.fi</a>, for non-commercial use only.</li>
   <li>Address lookup (Nominatim) and map images: data <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap contributors</a> (ODbL).</li>
+  <li>Weather: <a href="https://open-meteo.com/en/docs">Open-Meteo Forecast API</a>, under <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>; non-commercial use only.</li>
   <li>Elevation: <a href="https://open-meteo.com/">Open-Meteo</a>, under <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. <q>Copernicus WorldDEM-90 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA</q>.</li>
   <li>Runways: <a href="https://ourairports.com/data/">OurAirports</a> (public domain).</li>
   <li>Typeface: Barlow Semi Condensed, under the <a href="https://openfontlicense.org/">SIL Open Font License</a>.</li>

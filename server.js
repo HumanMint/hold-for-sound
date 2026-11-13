@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { isIP } from 'node:net';
 import { execFileSync } from 'node:child_process';
 import { queue } from './queue.js';
+import { weatherCache } from './weather.js';
 import { createHash } from 'node:crypto';
 import { gate, SCRIPTS } from './access.js';
 import { traffic, client, direct, network } from './stats.js';
@@ -264,6 +265,8 @@ async function fetchAircraft(lat, lon) {
 // answer may matter soon, and one a minute while the sky is quiet (cadence.js): the server decides, so
 // no page can spend the day's budget faster. The line also keeps under adsb.lol's 20 requests in 30 s.
 const FRESH_MS = PUBLIC_HOST ? FAST_S * 1000 : 4000;
+const meteoLine = queue(1100);
+const weather = weatherCache(meteoLine, getJson);
 const feedLine = queue(PUBLIC_HOST ? 1600 : 1000);
 const recent = new Map(); // "lat,lon" -> { at, fresh, was, body }, oldest first: `was` is cadence()'s last answer
 // A place nobody asks about any more is forgotten, answer and all, a minute after its answer runs out:
@@ -389,7 +392,7 @@ async function lookUp(q) {
       : (await getJson(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(q)}`))[0];
   if (!hit) return null;
   // 3 decimals, about 100 m, as for the flight services: the elevation data is no finer than that.
-  const { elevation } = await getJson(`https://api.open-meteo.com/v1/elevation?latitude=${(+hit.lat).toFixed(3)}&longitude=${(+hit.lon).toFixed(3)}`);
+  const { elevation } = await meteoLine(() => getJson(`https://api.open-meteo.com/v1/elevation?latitude=${(+hit.lat).toFixed(3)}&longitude=${(+hit.lon).toFixed(3)}`));
   return { name: hit.display_name, lat: +hit.lat, lon: +hit.lon, elevM: elevation[0], runways: await runwaysNear(+hit.lat, +hit.lon) };
 }
 
@@ -550,7 +553,7 @@ async function handle(req, res) {
       if (!req.socket.destroyed && sharing.valid(grant) && url.searchParams.get('log') === grant.id) log.frame(grant.id, now, data.ac);
       // age: seconds since the feed took this snapshot. The page uses it to refuse old data and to
       // allow for the delay; a feed that gives no time is taken at its word.
-      return json(200, { ...data, age: now ? Math.max(0, (Date.now() - now) / 1000) : 0 });
+      return json(200, { ...data, weather: replay ? null : weather(lat, lon), age: now ? Math.max(0, (Date.now() - now) / 1000) : 0 });
     }
     if (url.pathname === '/api/sharing') {
       if (req.method === 'DELETE') {

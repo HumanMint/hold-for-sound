@@ -72,7 +72,7 @@ function providers(answer) {
   writeFileSync(calls, '');
   writeFileSync(mock, `import { readFileSync, appendFileSync } from 'node:fs';
     const realNow = Date.now; Date.now = () => realNow() + Number(readFileSync(${JSON.stringify(clock)}, 'utf8'));
-    globalThis.fetch = async (url) => { const host = new URL(url).hostname; appendFileSync(${JSON.stringify(calls)}, host + '\\n'); return (${answer})(host); };`);
+    globalThis.fetch = async (url) => { if (String(url).includes('/v1/forecast')) return Response.json({}); const host = new URL(url).hostname; appendFileSync(${JSON.stringify(calls)}, host + '\\n'); return (${answer})(host); };`);
   return {
     env: { NODE_OPTIONS: `--import=${mock}` },
     at: (ms) => writeFileSync(clock, String(ms)),
