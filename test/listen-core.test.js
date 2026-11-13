@@ -1,3 +1,4 @@
+import { syntheticEnvelope } from './fixtures/acoustic.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { predict, ENVIRONMENTS } from '../public/predict.js';
@@ -116,9 +117,9 @@ function rig({ stored = null, ...page0 } = {}) {
       },
     }));
   boot();
-  const tracks = (site, trim) => r.traffic.map((p) => predict(p((now - START) / 1000), site, { loss: 0, floor: -Infinity, trim })).filter(Boolean);
+  const tracks = (site, trim) => r.traffic.map((p) => predict(p((now - START) / 1000), site, { loss: 0, floor: -Infinity, trim })).filter(Boolean).map(t => syntheticEnvelope(t, trim));
   const known = new Map();
-  const paged = (site, trim) => follow(known, r.feed(r.traffic.map((p) => p((now - START) / 1000)), (now - START) / 1000), now, site, () => ({ loss: 0, floor: pg.slider, trim })).tracks;
+  const paged = (site, trim) => follow(known, r.feed(r.traffic.map((p) => p((now - START) / 1000)), (now - START) / 1000), now, site, () => ({ loss: 0, floor: pg.slider, trim })).tracks.map(t => syntheticEnvelope(t, trim));
   const r = {
     pg,
     sent,

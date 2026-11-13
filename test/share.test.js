@@ -1,3 +1,4 @@
+import { syntheticEnvelope } from './fixtures/acoustic.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
@@ -21,7 +22,7 @@ const SET = { name: '5555 Melrose Ave, a place nobody is to learn', lat: 40, lon
 function update(now, rows, { site = SET, env = 'outdoors', floor = 60, age = 0, known = new Map(), ...more } = {}) {
   const { tracks, windows } = follow(known, rows, now, site, () => ({ loss: 0, floor, runways: site.runways, trim: {} }));
   const timed = windows.map((w) => ({ ...w, start: now + w.startS * 1000, end: now + w.endS * 1000 })).sort((a, b) => a.start - b.start);
-  return { at: now, dataAt: now - age * 1000, site, env, floor, trim: {}, learned: null, aircraft: rows, tracks, windows: timed, taxiing: [], ...more };
+  return { at: now, dataAt: now - age * 1000, site, env, floor, trim: {}, learned: null, aircraft: rows, tracks: tracks.map(t => syntheticEnvelope(t)), windows: timed, taxiing: [], ...more };
 }
 // A jet flying east at 3000 ft that is over the set `over` seconds after START.
 const jet = (hex, over) => (now) => {

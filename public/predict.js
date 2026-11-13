@@ -3,6 +3,8 @@
 // Source terms live in source.js; properly licensed LAmax curves would improve its type offsets.
 
 import { source } from './source.js';
+import { engine } from './engine.js';
+import { propagation, elevation } from './propagate.js';
 
 const FT = 0.3048;
 const KT = 0.5144;
@@ -305,6 +307,7 @@ export function predict(ac, site, { loss, floor, runways = [], landed = false, t
   const heli = ac.category === 'A7';
   const wall = heli ? loss * 0.8 : loss; // shortcut: uncalibrated rotor-thump allowance; replace with measured low-frequency losses
 
+  const kind = engine(ac);
   const samples = [];
   let win = null;
   let done = false; // the first audible stretch has ended; later ones are left for a later poll
@@ -316,13 +319,12 @@ export function predict(ac, site, { loss, floor, runways = [], landed = false, t
     if (p) {
       const ground = p.ground ?? Math.hypot(p.x, p.y);
       const dist = Math.max(Math.hypot(ground, p.alt), 30);
-      const km = dist / 1000;
+      const beta = elevation(p.alt, ground);
+      const lateralM = ground; // instantaneous short segment: Doc 29 4.5.5 nearest-point geometry
       heardAt = t + dist / SOUND_MS;
       db =
         source(ac, p, trim) -
-        20 * Math.log10(dist / 305) - // spreading, relative to the 1000 ft reference
-        (3.5 * Math.min(km, 3) + Math.max(km - 3, 0)) - // air absorption
-        8 * Math.max(0, 1 - Math.atan2(p.alt, ground) / RAD / 30) - // ground and buildings shield aircraft near the horizon
+        propagation(dist, beta, lateralM, kind) -
         wall;
       samples.push({ t, heardAt, x: p.x, y: p.y, alt: p.alt, dist, db });
       if (db >= floor && !done) {

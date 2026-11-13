@@ -1,3 +1,4 @@
+import { syntheticEnvelope } from './fixtures/acoustic.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { predict } from '../public/predict.js';
@@ -20,7 +21,7 @@ const plane = ({ hex, category, track, kt, ft, over, east = 0, north = 0 }) => (
   const y = north + gone * Math.cos((track * Math.PI) / 180);
   return { hex, category, lat: site.lat + y / 111195, lon: site.lon + x / (111195 * Math.cos((site.lat * Math.PI) / 180)), alt_baro: ft, gs: kt, track, seen_pos: 0 };
 };
-const tracksOf = (planes, s, trim) => planes.map((p) => predict(p(s), site, { loss: 0, floor: -Infinity, trim })).filter(Boolean);
+const tracksOf = (planes, s, trim) => planes.map((p) => predict(p(s), site, { loss: 0, floor: -Infinity, trim })).filter(Boolean).map(t => syntheticEnvelope(t, trim));
 
 // The page's loop without the page. Every 5 s the aircraft in `feed` are predicted and handed to the
 // ear, the ones in `sounding` are turned into sound, and the ear hears it a second at a time. `each`
@@ -596,4 +597,18 @@ test('the engine says why it did not find the tones of an expected aircraft', ()
   const reasons = new Set([...why.keys()].map((k) => k.split(' ')[1]));
   for (const r of reasons) assert.ok(['null', 'short', 'tone', 'steady', 'rival', 'drift', 'weak'].includes(r), r);
   assert.ok(reasons.has('rival') || reasons.has('steady'), `the decoys' reasons: ${[...why.keys()].filter((k) => k.startsWith('decoy'))}`);
+});
+
+test('the current propagation envelope can complete a heard synthetic jet pass', () => {
+  const ear = createEar({ sampleRate: RATE });
+  const voice = createSynth({ sampleRate: RATE, background: 50 });
+  const aircraft = plane({ hex: 'current', category: 'A3', track: 90, kt: 250, ft: 3000, over: 55 });
+  for (let s = 0; s < 180; s += 5) {
+    const at = START + s * 1000;
+    const tracks = [predict({ ...aircraft(s), t: 'B738' }, site, { loss: 0, floor: -Infinity })];
+    ear.update({ at, tracks, trim: {}, floor: 60 });
+    const pcm = voice.render(tracks, at, at, 5);
+    for (let i = 0; i < 5; i++) ear.push(pcm.subarray(i * RATE, (i + 1) * RATE), at + (i + 1) * 1000);
+  }
+  assert.ok(ear.observations().some(o => o.hex === 'current' && o.heard));
 });

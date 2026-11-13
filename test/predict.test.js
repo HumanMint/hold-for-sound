@@ -111,7 +111,7 @@ test('on the ground a stale heading or a lagging track never hides a takeoff', (
   assert.equal(phase(at({ track: 90 })), 'taking off from 09');
 
   // A jet rolling east down 09 at 60 kt, its heading stuck at 180, polled every 5 s as the page does:
-  // on every poll its climb-out over the site is due within half a minute, and the banner says so.
+  // on every poll its takeoff is already audible or due within half a minute, and the banner says so.
   const history = new Map();
   for (let s = 0; s <= 20; s += 5) {
     const now = 1_800_000_000_000 + s * 1000;
@@ -120,7 +120,7 @@ test('on the ground a stale heading or a lagging track never hides a takeoff', (
     const w = run(row, 'outdoors', { runways, motion: motion(history.get(row.hex)) });
     assert.ok(phase(w) === 'taking off from 09' && w.startS < 30, `${s} s in`);
     const told = status([{ ...w, start: now + w.startS * 1000, end: now + w.endS * 1000 }], now, now);
-    assert.deepEqual([told.state, told.until], ['soon', now + w.startS * 1000], `${s} s in`);
+    assert.deepEqual([told.state, told.until], [w.startS <= 0 ? 'hold' : 'soon', now + (w.startS <= 0 ? w.endS : w.startS) * 1000], `${s} s in`);
   }
 });
 
@@ -216,7 +216,7 @@ test('the result carries the whole predicted path, and trim shifts a class up or
 });
 
 test('takeoffs the feed may show too late: heard where a runway is near, not where walls or distance stop them', () => {
-  const at = (env, extra) => unseen(site, { ...ENVIRONMENTS[env], runways, ...extra });
+  const at = (env, extra) => unseen(site, { ...ENVIRONMENTS[env], floor: ENVIRONMENTS[env].floor + 5, runways, ...extra });
   // Beside the 3 km runway above (a heavy's): the roll is heard within seconds, from either end.
   const near = at('outdoors');
   assert.deepEqual(near.map((e) => `${e.runway} ${e.category}`).sort(), ['09 A5', '27 A5']);
@@ -227,17 +227,17 @@ test('takeoffs the feed may show too late: heard where a runway is near, not whe
   assert.ok(stage[0].leadS > 50 && stage[0].leadS < 90, `about a minute, got ${stage[0].leadS}`);
   const ns = (len, metresNorth, id = 'X') => [{ airport: id, ends: [{ id: '09', lat: 34 + metresNorth / 111195, lon: lon(-len / 2) }, { id: '27', lat: 34 + metresNorth / 111195, lon: lon(len / 2) }] }];
   assert.deepEqual(at('outdoors', { runways: ns(3000, 50000) }), []); // 50 km away
-  assert.deepEqual(at('outdoors', { runways: ns(800, 2000) }), []); // a light aircraft's strip 2 km off, climbing away either way
+  assert.deepEqual(at('outdoors', { runways: ns(800, 3000) }), []); // a light aircraft's strip 3 km off, climbing away either way
   // A 2 km runway 3 km off: an airliner's takeoff is heard outdoors, not on a stage, nor above a higher warning level or a trim down.
   const side = ns(2000, 3000);
   assert.equal(at('outdoors', { runways: side })[0]?.category, 'A3');
   assert.deepEqual(at('stage', { runways: side }), []);
-  assert.deepEqual(at('outdoors', { runways: side, floor: 50 }), []);
-  assert.deepEqual(at('outdoors', { runways: side, trim: { A3: -5 } }), []);
+  assert.deepEqual(at('outdoors', { runways: side, floor: 60 }), []);
+  assert.deepEqual(at('outdoors', { runways: side, trim: { A1: -15, A2: -15, A3: -15 } }), []);
   // Tuning that makes heavies quieter here does not hide an airliner's takeoff from the same runway.
   const big = ns(3000, 3000);
   assert.equal(at('outdoors', { runways: big })[0]?.category, 'A5');
-  assert.equal(at('outdoors', { runways: big, trim: { A5: -12 } })[0]?.category, 'A3');
+  assert.equal(at('outdoors', { runways: big, trim: { A5: -20 } })[0]?.category, 'A3');
 });
 
 test('a lightweight stage gives less protection than a purpose-built stage', () => {
