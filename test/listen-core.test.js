@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { predict, ENVIRONMENTS } from '../public/predict.js';
 import { createSynth } from '../public/synth.js';
 import { createCore } from '../public/listen-core.js';
-import { siteKey, recap } from '../public/listen-view.js';
+import { siteKey, recap, SCALE } from '../public/listen-view.js';
 import { follow } from '../public/lost.js';
 
 // The life of the warning level: the exchange of `hfs:update` and `hfs:tune` between the listening
@@ -172,7 +172,7 @@ const five = Array.from({ length: 5 }, (_, i) => flying({ hex: `jet${i}`, track:
 const loud = () => createSynth({ sampleRate: RATE, background: 65, louder: 8 });
 // What `n` clear passes at one floor look like in storage.
 const passes = (floor, n = 4) => Array.from({ length: n }, () => ({ hex: 'abc123', category: 'A3', how: 'envelope', heard: true, confidence: 0.75, predPeak: floor + 12, floor }));
-const saved = (sets) => JSON.stringify({ on: false, device: '', sets: Object.fromEntries(sets.map(([site, env, floor, n]) => [siteKey(site, env), { at: START, list: passes(floor, n) }])) });
+const saved = (sets) => JSON.stringify({ on: false, scale: SCALE, device: '', sets: Object.fromEntries(sets.map(([site, env, floor, n]) => [siteKey(site, env), { at: START, list: passes(floor, n) }])) });
 
 test('a pass heard with the microphone is filed under the set it was heard at, and tunes the page', () => {
   const r = rig({ slider: 60 });

@@ -5,7 +5,7 @@ import { predict } from '../public/predict.js';
 import { BINS, FMIN, FMAX } from '../public/hear.js';
 import { tune } from '../public/tune.js';
 import { morph, easeOut } from '../public/map-geo.js';
-import { layout, LOW, HIGH, curve, UNCHANGED, overOf, heardOver, levelY, pitchY, shade, rowBins, ticks, createForecast, levelAt, runs, audible, held, series, place, untrimmed, createClock, say, PROBLEMS, explain, recap, notable, siteKey, file, restore, sameTuning, fittedLines, fitLabel, triedLines } from '../public/listen-view.js';
+import { layout, LOW, HIGH, curve, UNCHANGED, overOf, heardOver, levelY, pitchY, shade, rowBins, ticks, createForecast, levelAt, runs, audible, held, series, place, untrimmed, createClock, say, PROBLEMS, explain, recap, notable, siteKey, file, restore, SCALE, sameTuning, fittedLines, fitLabel, triedLines } from '../public/listen-view.js';
 
 // The parts of the listening panel that need no page. What the canvas looks like is checked by eye.
 
@@ -508,11 +508,12 @@ test('the pitch overlay is the whole harmonic series when the engine names the n
 test('saved settings are checked before they are used', () => {
   const good = { hex: 'abc123', category: 'A3', how: 'envelope', heard: true, confidence: 0.75, predPeak: 52, floor: 40 };
   const unheard = { hex: 'abc123', category: 'A3', how: 'unheard', heard: false, confidence: 0.7, predPeak: 52, floor: null };
-  const empty = { device: '', sets: {} };
+  const empty = { scale: SCALE, device: '', sets: {} };
   for (const text of [null, '', 'not json', '42', '"text"', '[]', 'null', '{"sets":null}', '{"sets":[]}', '{"sets":"x"}', '{"on":"yes","device":7}']) assert.deepEqual(restore(text), empty, `${text}`);
 
   const saved = restore(JSON.stringify({
     on: true,
+    scale: SCALE,
     device: 'abc',
     before: 35, // from an earlier version: not kept
     sets: {
@@ -524,9 +525,14 @@ test('saved settings are checked before they are used', () => {
       'some good': { at: 9, list: [{ ...good, predPeak: undefined }, good] },
     },
   }));
-  assert.deepEqual(saved, { device: 'abc', sets: { 'a indoors': { at: 5, list: [good, unheard] }, 'some good': { at: 9, list: [good] } } });
+  assert.deepEqual(saved, { scale: SCALE, device: 'abc', sets: { 'a indoors': { at: 5, list: [good, unheard] }, 'some good': { at: 9, list: [good] } } });
   for (const set of Object.values(saved.sets)) assert.doesNotThrow(() => tune(set.list));
   assert.deepEqual(restore(JSON.stringify(saved)), saved, 'what it writes, it reads back the same');
+  // Passes stored before the loudness model last changed were predicted on another scale: they would
+  // tune this one wrongly, so they are dropped, and the input chosen is kept.
+  for (const scale of [undefined, SCALE - 1, String(SCALE)]) {
+    assert.deepEqual(restore(JSON.stringify({ ...saved, scale })), { scale: SCALE, device: 'abc', sets: {} }, `scale ${scale}`);
+  }
 });
 
 test('two tunings are the same when the page would treat them the same', () => {

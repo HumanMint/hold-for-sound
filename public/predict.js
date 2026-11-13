@@ -11,11 +11,12 @@ const FT = 0.3048;
 const KT = 0.5144;
 const SOUND_MS = 343;
 // shortcut: the microphones are uncalibrated, so recorded passes give only differences between aircraft,
-// not absolute levels. Splitting out the source, propagation and weather terms made a jet landing about
-// 380 m from the set (the reference pass in every session so far, which the earlier model matched)
-// about 5.4 dB louder, and one passing 3000 ft overhead (never recorded) about 1.5 dB quieter. This takes
-// back about half of the first: such an arrival stays about 2.4 dB louder than before (warned early, the
-// safe side), and an overhead pass ends up about 1.5 dB quieter than the earlier, equally unmeasured, guess.
+// not absolute levels. Splitting out the source, propagation and weather terms made the reference pass
+// of every session so far (a jet landing about 380 m from the set, which the earlier model matched)
+// about 5.4 dB louder at its peak. This takes back about half: those arrivals replay about 2.4 dB louder
+// than before (warned early, the safe side). The same 3 dB leaves a jet level at 3000 ft passing overhead
+// at 250 kt (never recorded) about 2.2 dB quieter than the earlier, equally unmeasured, guess, and one
+// descending past 380 m to the side at 300 ft about 4.8 dB louder; `test/predict.test.js` holds both.
 const ANCHOR_DB = -3;
 const RAD = Math.PI / 180;
 
@@ -330,9 +331,12 @@ export function predict(ac, site, { loss, floor, runways = [], landed = false, t
       const beta = elevation(p.alt, ground);
       const lateralM = ground; // instantaneous short segment: Doc 29 4.5.5 nearest-point geometry
       heardAt = t + dist / SOUND_MS;
+      // A helicopter's distance is what its fanned headings give, but its x/y are the straight line: the
+      // bearing the wind is judged from may not be where most headings put it. Weather may only add there.
+      const air = weatherLevel(weather, { bearing: Math.atan2(p.x, p.y) / RAD, elevation: beta, distance: dist, altitude: p.alt }, weatherAt);
       db =
         source(ac, p, trim) +
-        weatherLevel(weather, { bearing: Math.atan2(p.x, p.y) / RAD, elevation: beta, distance: dist, altitude: p.alt }, weatherAt) -
+        (p.ground != null ? Math.max(0, air) : air) -
         propagation(dist, beta, lateralM, kind) -
         wall +
         ANCHOR_DB;

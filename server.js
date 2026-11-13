@@ -96,6 +96,7 @@ setInterval(() => {
   for (const limit of [places, searches, grantBytes, clientBytes, contacts]) limit.sweep();
   for (const [ip, hit] of callers) if (Date.now() - hit.at >= MIN) callers.delete(ip);
   forgetAnswers();
+  weather.sweep();
 }, MIN).unref();
 // Everything in public/ is served, by file extension. The page's own scripts and styles are asked for
 // under r/<release>/, which is stripped here: a new release is a new address for every file they load,

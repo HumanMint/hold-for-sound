@@ -249,3 +249,14 @@ test('a lightweight stage gives less protection than a purpose-built stage', () 
   const heli = { hex: 'def456', category: 'A7', lat: 34, lon: -118, alt_baro: 800, gs: 0 };
   assert.ok(Math.abs(at('outdoors', heli).peakDb - at('warehouse', heli).peakDb - 20) < 1e-9);
 });
+
+test('the loudness scale stays near the one the recorded reference passes were matched on', () => {
+  // Peaks the earlier single-formula model gave (outdoors, nothing else): see ANCHOR_DB in predict.js.
+  const site = { lat: 34, lon: -118, elevM: 0 };
+  const north = (m) => 34 + m / 111195;
+  const peak = (ac) => Math.max(...predict(ac, site, { loss: 0, floor: -Infinity }).path.map((p) => p.db));
+  const overhead = peak({ hex: 'a', t: 'E75L', category: 'A3', lat: north(-20000), lon: -118, alt_baro: 3000, gs: 250, track: 0, seen_pos: 0 });
+  const abeam = peak({ hex: 'b', t: 'E75L', category: 'A3', lat: north(-6000), lon: -118 + 380 / 92185, alt_baro: 300, gs: 140, track: 0, baro_rate: -700, seen_pos: 0 });
+  assert.ok(overhead > 67.24 - 3 && overhead < 67.24 + 1, `overhead: ${overhead}, was 67.24`);
+  assert.ok(abeam > 68.25 && abeam < 68.25 + 6, `low and to the side: ${abeam}, was 68.25`);
+});

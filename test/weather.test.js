@@ -49,4 +49,22 @@ test('weather cache coalesces rounded places, expires hourly and caches failure'
   await task.catch(() => {});
   assert.equal(cache(12.34567, -65.4321), null);
   assert.equal(calls, 2);
+  // A place nobody asks about again is forgotten an hour after it was last fetched.
+  cache.sweep();
+  assert.equal(cache.size(), 1);
+  time += 3600000;
+  cache.sweep();
+  assert.equal(cache.size(), 0);
+});
+test('weather never makes a helicopter quieter: its fanned headings may be far from the line the wind is judged on', () => {
+  // 6 km east, heading west at 100 kt and 1000 ft, unsure of its heading; the wind blows from the west,
+  // so wherever the straight line puts it east of the set the sound comes upwind.
+  const site = { lat: 0, lon: 0, elevM: 0 };
+  const ac = { hex: 'heli01', category: 'A7', t: 'B407', lat: 0, lon: 6000 / 111320, alt_baro: 1000, gs: 100, track: 270, seen_pos: 0 };
+  const motion = { wander: 3, area: [ac] };
+  const opts = { loss: 0, floor: -Infinity, motion };
+  const calm = predict(ac, site, opts).path;
+  const windy = predict(ac, site, { ...opts, weather: { ...w, wind_direction_10m: 270 }, weatherAt: now }).path;
+  assert.ok(calm.some((p, i) => p.dist > 3000 && windy[i].db === calm[i].db), 'a reachable case');
+  windy.forEach((p, i) => assert.ok(p.db >= calm[i].db - 1e-9, `${p.t} s: ${p.db} < ${calm[i].db}`));
 });

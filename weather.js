@@ -4,7 +4,11 @@ const HOUR = 3600_000;
 export function weatherCache(line, getJson, clock = Date.now) {
   const cache = new Map();
   const calls = [];
-  return (lat, lon) => {
+  // A place's weather is kept for an hour, then forgotten: nothing is kept of a place nobody watches.
+  const sweep = (now = clock()) => {
+    for (const [key, hit] of cache) if (now - hit.at >= HOUR) cache.delete(key);
+  };
+  const get = (lat, lon) => {
     const key = `${Number(lat).toFixed(3)},${Number(lon).toFixed(3)}`;
     const now = clock();
     let hit = cache.get(key);
@@ -29,4 +33,5 @@ export function weatherCache(line, getJson, clock = Date.now) {
     }
     return hit.body;
   };
+  return Object.assign(get, { sweep, size: () => cache.size });
 }

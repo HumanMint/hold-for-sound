@@ -428,6 +428,12 @@ export const notable = (o, floor, trim = {}) => o.heard === true || o.predPeak +
 
 // ---- What is stored ----
 
+// The scale stored passes were predicted on. A pass keeps the level the page predicted for it, and
+// tune() compares that with what was heard, so passes predicted on another scale would tune this one
+// wrongly: when the loudness model changes, this goes up and older passes are dropped. The input
+// chosen is kept.
+export const SCALE = 2;
+
 // The saved text, checked. Anything that is not the shape written here is left out, so a damaged or
 // hand-edited entry cannot stop the panel or reach tune(): a set needs a time and a list, and a pass
 // in it needs what remember() required of it when it was stored, with numbers where numbers go.
@@ -439,13 +445,13 @@ export function restore(text) {
   const plain = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
   const pass = (o) => plain(o) && typeof o.hex === 'string' && Number.isFinite(o.confidence) && Number.isFinite(o.predPeak) && (o.heard === false || (o.heard === true && Number.isFinite(o.floor)));
   const sets = {};
-  for (const [key, set] of Object.entries(plain(saved) && plain(saved.sets) ? saved.sets : {})) {
+  for (const [key, set] of Object.entries(plain(saved) && saved.scale === SCALE && plain(saved.sets) ? saved.sets : {})) {
     if (!plain(set) || !Number.isFinite(set.at) || !Array.isArray(set.list)) continue;
     const list = set.list.filter(pass);
     if (list.length) sets[key] = { at: set.at, list };
   }
   // Whether listening was on is not kept: it only ever starts when the button is pressed.
-  return { device: typeof saved?.device === 'string' ? saved.device : '', sets };
+  return { scale: SCALE, device: typeof saved?.device === 'string' ? saved.device : '', sets };
 }
 
 // Whether two tunings ({ floor, trim }) are the same thing to the page.
