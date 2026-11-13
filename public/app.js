@@ -1,4 +1,5 @@
 import { ENVIRONMENTS, CLASS_NAME, HORIZON_S, ifDeparts, unseen } from './predict.js';
+import { freshWeather } from './weather.js';
 import { follow } from './lost.js';
 import { widen } from './widen.js';
 import { remember, motion } from './motion.js';
@@ -56,10 +57,12 @@ document.addEventListener('hfs:share', (e) => {
 
 // The other parts of the page (map.js, listen.js) are separate modules. They never import this file;
 // everything is passed as events on `document`:
-//   hfs:update  from here after every poll. detail: { at, dataAt, staleMs, site, env, floor, trim, learned, aircraft, tracks, windows, taxiing }
+//   hfs:update  from here after every poll. detail: { at, dataAt, staleMs, site, env, floor, trim, learned, aircraft, tracks, windows, taxiing, weather }
 //               `at` is the moment the paths are measured from. `dataAt` is how fresh the feed's data is
 //               (earlier than `at` when the feed is behind): nothing may look live once it is `staleMs`
 //               old (20 s, or 80 s on a quiet sky's answer kept for a minute: staleAfter() in status.js).
+//               `weather` is the forecast used by prediction, null when unavailable or older than an hour.
+//               Weather withdrawal repeats the last update with the same flight timestamps and weather: null.
 //               `aircraft` is the raw feed, `tracks` is predict() for every aircraft with no floor (so each
 //               has its whole `path`), `windows` are the audible ones with start/end in epoch ms
 //               (widened by `hfs:timing`). Both carry `seenAt`, the epoch ms of the position they rest
@@ -138,9 +141,19 @@ const airportsOf = (list) => [...new Set(list.map((w) => w.airport))].join(' and
 // Takeoffs that would be heard here before the feed may show them (predict.js), for the set and
 // settings in use. Worked out again only when one of those changes.
 let weather = null;
+let update = null;
+function sendUpdate(detail) {
+  update = detail;
+  send('hfs:update', detail);
+}
+// Withdraw the weather without advancing the flight data's clock.
+function clearWeather() {
+  weather = null;
+  if (update?.weather) sendUpdate({ ...update, weather: null });
+}
 let rolls = { key: '', list: [] };
 function takeoffs() {
-  const opts = { loss: ENVIRONMENTS[form.env.value].loss, floor: +form.floor.value, runways: site.runways, trim: tuned.trim, weather: weather && Date.now() - weather.at <= 3600_000 ? weather : null, weatherAt: Date.now() };
+  const opts = { loss: ENVIRONMENTS[form.env.value].loss, floor: +form.floor.value, runways: site.runways, trim: tuned.trim, weather: freshWeather(weather, Date.now()), weatherAt: Date.now() };
   const key = JSON.stringify([site.lat, site.lon, opts.loss, opts.floor, opts.trim, opts.weather]);
   if (rolls.key !== key) rolls = { key, list: unseen(site, opts) };
   return rolls.list;
@@ -230,7 +243,7 @@ async function poll() {
     // shares one answer for up to 4 s, 10 s in public, a minute in public while the sky is quiet), so
     // every position is that much older than it says.
     const age = data.age ?? 0;
-    weather = data.weather ?? null;
+    weather = freshWeather(data.weather, now);
     every = data.every ?? 0;
     for (const ac of data.ac) if (ac.seen_pos != null) ac.seen_pos += age;
     remember(moves, data.ac, now);
@@ -271,11 +284,12 @@ async function poll() {
     polledAt = now;
     feedError = '';
     pace.worked();
-    send('hfs:update', { at: now, dataAt: lastData, staleMs: staleAfter(every), site, env: form.env.value, floor: +form.floor.value, trim: tuned.trim, learned: tuned.floor, aircraft: data.ac, tracks, windows, taxiing });
+    sendUpdate({ at: now, dataAt: lastData, staleMs: staleAfter(every), site, env: form.env.value, floor: +form.floor.value, trim: tuned.trim, learned: tuned.floor, aircraft: data.ac, tracks, windows, taxiing, weather });
     $('feed').textContent = `${data.ac.length} aircraft within 30 nm from ${data.source}, at ${clock(lastData)}`;
   } catch (e) {
     if (site !== place) return;
     if (e.name === 'AbortError') return; // sharing went off while it was asking: the next poll asks again
+    clearWeather();
     pace.failed(e.retryAfter, Date.now());
     feedError = e.name === 'FeedError' ? e.message : 'Unable to reach flight data. Retrying automatically.';
     $('feed').textContent = feedError;
@@ -409,6 +423,7 @@ function fill(li, w, now) {
 }
 
 function render() {
+  if (weather && !freshWeather(weather, Date.now())) clearWeather();
   if (!site) return;
   placeBar();
   const now = Date.now();
@@ -607,7 +622,7 @@ async function watch(mine) {
     save();
     showSite();
     if (moved) {
-      send('hfs:update', { at: Date.now(), dataAt: 0, site, env: form.env.value, floor: +form.floor.value, trim: tuned.trim, learned: tuned.floor, aircraft: [], tracks: [], windows: [], taxiing: [] });
+      sendUpdate({ at: Date.now(), dataAt: 0, site, env: form.env.value, floor: +form.floor.value, trim: tuned.trim, learned: tuned.floor, aircraft: [], tracks: [], windows: [], taxiing: [], weather: null });
       send('hfs:select', { hex: null });
     }
     poll();
