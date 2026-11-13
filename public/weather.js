@@ -1,6 +1,10 @@
 // shortcut: stability cutoffs and acoustic gains are uncalibrated guesses, not ray tracing.
 const RAD = Math.PI / 180;
 const finite = Number.isFinite;
+export function freshWeather(w, now) {
+  return w && finite(w.at) && finite(now) && now >= w.at && now - w.at <= 3600_000 ? w : null;
+}
+
 export function stability(w) {
   if (!w) return 'D';
   if (finite(w.temperature_2m) && finite(w.temperature_80m)) {
@@ -17,7 +21,7 @@ export function stability(w) {
 // Bearing is from the set TO the source, degrees clockwise from north; wind is FROM.
 // Downwind propagation is already the lateral attenuation baseline: no additional wind gain.
 export function weatherLevel(w, { bearing, elevation, distance, altitude }, now) {
-  if (!w || !finite(w.at) || !finite(now) || now < w.at || now - w.at > 3600_000) return 0;
+  if (!freshWeather(w, now)) return 0;
   if (![bearing, elevation, distance, altitude].every(finite) || elevation >= 15 || distance <= 0) return 0;
   // shortcut: taper to zero by 15 degrees and within 1 km; tune with measured low-angle passes.
   const shallow = Math.max(0, Math.min(1, (15 - elevation) / 10)) * Math.min(1, distance / 1000);

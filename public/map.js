@@ -1,5 +1,6 @@
 // The map of aircraft around the set. Draws inside <section id="map">; see the events described in app.js.
 // The set stays in the middle and the map never pans. Geometry lives in map-geo.js, where it is tested.
+import { windReadout } from './map-wind.js';
 import { CLASS_NAME, located, local } from './predict.js';
 import { STALE_MS, SOON_MS } from './status.js'; // when the page stops trusting its data, and when "clear" becomes "heads up"
 import { metresPerPixel, zoomFor, tiles, toScreen, sample, edge, overlaps, hit, place, labelSides, ringStep, compass, CUT_M, easeOut, morph, heardOn, heardNow, clocks, moving, trustLeftS } from './map-geo.js';
@@ -24,6 +25,7 @@ root.innerHTML = `<div class="map-frame map-empty">
   <div class="map-tiles" aria-hidden="true"></div>
   <canvas role="img" aria-describedby="map-says" aria-label="Aircraft around the set and where each is predicted to go. The list of aircraft on this page gives the same predictions as text."></canvas>
   <p class="map-notice"></p>
+  <button type="button" class="map-wind" hidden><span class="map-wind-row"><span class="map-wind-arrow" aria-hidden="true">↑</span><span class="map-wind-value"></span></span><span class="map-wind-tag"></span></button>
   <div class="map-zoom"><button type="button" aria-label="Zoom in">+</button><button type="button" aria-label="Zoom out">&minus;</button></div>
   <div class="map-foot"><p class="map-caption"></p><a class="map-credit" target="_blank" rel="noopener"></a></div>
   <p class="map-says" id="map-says"></p>
@@ -51,6 +53,7 @@ const staleMs = () => last.staleMs ?? STALE_MS;
 const isStale = (now) => now - (last.dataAt ?? last.at) > staleMs();
 let craft = []; // every aircraft in it that has a position: { hex, ac, track, win, taxiing, lost, at }
 let selected = null;
+let windUnit = 'mph';
 let step = 0; // zoom, relative to the default for this box
 let view = { w: 0, h: 0, dpr: 1, zoom: 10, mpp: 100 };
 let marks = []; // what the last frame drew, for clicks: { hex, x, y, box, loud }
@@ -60,8 +63,29 @@ const reshape = new Map(); // hex -> { from, shift, at, ease }: the path drawn b
 const trails = new Map(); // hex -> its reported positions over the last minute (none are added while it is lost)
 const sides = new Map(); // hex -> the side of the aircraft its label was last on
 try {
+  if (localStorage.getItem('hfs-map-unit') === 'knots') windUnit = 'knots';
   step = Math.max(STEPS[0], Math.min(STEPS[1], +localStorage.getItem('hfs-map') || 0));
 } catch {}
+
+function showWind() {
+  const value = last?.dataAt ? windReadout(last.weather, windUnit) : null;
+  const button = $('.map-wind');
+  button.hidden = !value;
+  if (!value) return;
+  put($('.map-wind-value'), value.text);
+  put($('.map-wind-tag'), value.tag);
+  $('.map-wind-tag').hidden = !value.tag;
+  const arrow = $('.map-wind-arrow');
+  arrow.hidden = value.angle === null;
+  arrow.style.transform = `rotate(${value.angle ?? 0}deg)`;
+  button.setAttribute('aria-label', value.label);
+}
+$('.map-wind').addEventListener('click', () => {
+  windUnit = windUnit === 'mph' ? 'knots' : 'mph';
+  try { localStorage.setItem('hfs-map-unit', windUnit); } catch {}
+  showWind();
+  draw();
+});
 
 // Colours and type come from theme.css. A canvas can't use var(), so they are read through a hidden
 // element (which also resolves anything the theme computes) and read again whenever they might change.
@@ -416,7 +440,7 @@ function draw() {
     return { x: a.x - b.x, y: a.y - b.y, w: a.width, h: a.height };
   };
   // Labels keep clear of the controls and words laid over the map, of the set, and of each other's aircraft.
-  const taken = ['.map-zoom', '.map-notice', '.map-caption', '.map-credit'].map((selector) => inFrame($(selector)));
+  const taken = ['.map-wind', '.map-zoom', '.map-notice', '.map-caption', '.map-credit'].map((selector) => inFrame($(selector)));
   taken.push({ x: centre.x - 16, y: centre.y - 13, w: 32, h: 26 + theme.em * 1.5 });
   for (const l of labels) if (!l.e.off) taken.push({ x: l.e.x - 12, y: l.e.y - 12, w: 24, h: 24 });
   const boxes = place(labels, w, h, taken, gap);
@@ -620,6 +644,7 @@ document.addEventListener('hfs:update', (e) => {
   const before = new Map(craft.map((c) => [c.hex, c.track]));
   const shift = last && (next.at - last.at) / 1000; // how far the paths' clock moved on
   last = next;
+  showWind();
 
   const tracks = new Map(next.tracks.map((track) => [track.hex, track]));
   const wins = new Map(next.windows.map((win) => [win.hex, win]));
