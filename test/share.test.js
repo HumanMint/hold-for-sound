@@ -240,7 +240,7 @@ test('a batch is what the server stores: the set by its coordinates, each poll w
 // it is heard by its swell and filed after its louder aft tail has faded. Everything the panel reports goes to `share`.
 function listen(r, kind, seconds) {
   const reports = [];
-  const core = createCore({ load: () => null, save() {}, send: (name, detail) => r.share.tune(detail), clock: () => r.now, report: (d) => (reports.push(d), r.share.heard(d)) });
+  const core = createCore({ load: () => null, save() {}, send: (name, detail) => { if (name === 'hfs:tune') r.share.tune(detail); }, clock: () => r.now, report: (d) => (reports.push(d), r.share.heard(d)) });
   const voice = createSynth({ sampleRate: RATE, background: 50 });
   const ac = jet('aaa111', 55);
   const known = new Map();

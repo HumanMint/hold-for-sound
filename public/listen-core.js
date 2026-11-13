@@ -5,7 +5,7 @@
 //
 //   const core = createCore({ load, save, send, clock, changed, report })
 //       load()            the saved text, or null          save(text)    keep it
-//       send(name, detail)    an event for the page: `hfs:tune` or `hfs:timing`
+//       send(name, detail)    an event for the page: `hfs:tune`, `hfs:timing` or `hfs:audibility`
 //       clock()           epoch ms now (Date.now)          changed()     something to show has changed
 //       report(detail)    each second of listening, what was measured in it: listen.js sends it as
 //                         `hfs:heard` (app.js describes it). It changes nothing here.
@@ -43,6 +43,7 @@
 //   the aircraft and can name it, but a pass whose peak was due while the track was an estimate is
 //   never stored: when and how loud it was predicted to be were both guesses.
 
+import { unheard } from './unheard.js';
 import { createEar } from './hear.js';
 import { tune, remember } from './tune.js';
 import { STALE_MS } from './status.js';
@@ -71,6 +72,8 @@ export function createCore({ load, save, send, clock = Date.now, changed = () =>
   let back = 0; // when flight data last turned fresh after being old: passes reaching back before it are not learned
   let cut = false; // flight data that was there has gone old, and not yet come back
   let gaps = []; // [[from, to], ...]: the stretches in which flight data was old. The last `to` is Infinity until it is fresh again
+  const quiet = new Map(); // negative evidence for current helicopter windows only
+  const clearQuiet = () => { quiet.clear(); send('hfs:audibility', { at: clock(), hexes: [] }); };
   const heard = []; // { at, rise } once a second: how far the sound was above the background
   const tones = new Map(); // hex -> { hz: [...], fundamental, confidence }: aircraft matched by pitch
   let seenAt = null; // `at` of the last engine status dealt with
@@ -107,6 +110,7 @@ export function createCore({ load, save, send, clock = Date.now, changed = () =>
 
   // A new engine: no pass under way, and no tone matched, can carry over into it.
   function newEar() {
+    clearQuiet();
     if (source) (ear = createEar({ sampleRate: rate })).mute(muted);
     timing.clear();
     if (feed) timed();
@@ -130,6 +134,7 @@ export function createCore({ load, save, send, clock = Date.now, changed = () =>
   function gate() {
     const old = stale();
     if (old && !wasStale && feed) {
+      clearQuiet();
       ear?.update({ at: clock(), tracks: [], trim: feed.trim ?? {}, floor: null });
       cut = true;
       gaps = [...gaps.filter(([, to]) => to >= clock() - 600_000), [clock(), Infinity]]; // the engine keeps 10 min
@@ -197,6 +202,7 @@ export function createCore({ load, save, send, clock = Date.now, changed = () =>
         afresh();
       }
       feed = detail;
+      if ([...quiet.keys()].some((hex) => !feed.windows.some((w) => w.hex === hex && w.start <= clock() && w.end > clock() && !w.lost && !w.unsure))) clearQuiet();
       for (const w of feed.tracks) {
         const spans = guessed.get(w.hex) ?? [];
         const open = spans.at(-1)?.[1] === Infinity;
@@ -239,6 +245,7 @@ export function createCore({ load, save, send, clock = Date.now, changed = () =>
       const s = ear.status();
       if (s.at === seenAt) return columns;
       seenAt = s.at;
+      send('hfs:audibility', { at: s.at, hexes: unheard(quiet, feed?.windows ?? [], clock(), { status: s, demo: source === 'demo', stale: old }) });
       // The engine's level is smoothed over 6 s, so it describes the moment 3 s before.
       if (s.ready) heard.push({ at: s.at - 3000, rise: s.rise });
       while (heard[0]?.at < s.at - 240_000) heard.shift();
@@ -275,12 +282,14 @@ export function createCore({ load, save, send, clock = Date.now, changed = () =>
     },
 
     again() {
+      clearQuiet();
       ear.forget();
       changed();
     },
 
     // The browser's word on whether the microphone is muted. It outlives a change of engine.
     mute(on) {
+      clearQuiet();
       ear.mute((muted = on));
     },
   };

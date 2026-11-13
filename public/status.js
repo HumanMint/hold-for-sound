@@ -17,7 +17,7 @@ export const SOON_MS = 60_000; // an aircraft this close turns "clear" into "hea
 export function holds(windows, now) {
   const out = [];
   for (const w of windows) {
-    if (w.end <= now || w.unsure) continue; // over, or an aircraft the page lost track of: no hold rests on that
+    if (w.end <= now || w.unsure || w.notHeard) continue; // expired, uncertain or currently not heard: no hold rests on that
     const last = out.at(-1);
     if (last && w.start <= last.end) last.end = Math.max(last.end, w.end);
     else out.push({ start: w.start, end: w.end, first: w });
@@ -36,8 +36,10 @@ export function status(windows, now, lastData, staleMs = STALE_MS) {
   if (now - lastData > staleMs) return { state: '' }; // never call it clear on old data
   const [a, b] = holds(windows, now);
   if (a && a.start <= now) return { state: 'hold', until: a.end, current: a, next: b };
+  const quiet = windows.find((w) => w.notHeard && w.start <= now && w.end > now);
   const unsure = windows.find((w) => w.unsure && w.start <= now && w.end > now);
   if (unsure) return { state: 'soon', unsure, until: a ? a.start : null, next: a };
+  if (quiet) return { state: 'soon', notHeard: quiet, until: a ? a.start : null, next: a };
   return { state: a && a.start - now < SOON_MS ? 'soon' : 'clear', until: a ? a.start : null, next: a };
 }
 

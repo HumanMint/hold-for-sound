@@ -5,6 +5,8 @@ import { predict, ENVIRONMENTS } from '../public/predict.js';
 import { createSynth } from '../public/synth.js';
 import { createCore } from '../public/listen-core.js';
 import { siteKey, recap, SCALE } from '../public/listen-view.js';
+import { notHeard } from '../public/unheard.js';
+import { status } from '../public/status.js';
 import { follow } from '../public/lost.js';
 
 // The life of the warning level: the exchange of `hfs:update` and `hfs:tune` between the listening
@@ -102,6 +104,7 @@ function rig({ stored = null, ...page0 } = {}) {
   let now = START;
   let core;
   const sent = [];
+  let audibility = null;
   const timings = []; // every `hfs:timing`, which app.js takes up at its next poll
   const pg = page(page0);
   const boot = () =>
@@ -110,6 +113,7 @@ function rig({ stored = null, ...page0 } = {}) {
       save: (to) => (text = to),
       clock: () => now,
       send(name, detail) {
+        if (name === 'hfs:audibility') return (audibility = detail);
         if (name === 'hfs:timing') return timings.push(detail);
         assert.equal(name, 'hfs:tune');
         sent.push(detail);
@@ -125,8 +129,11 @@ function rig({ stored = null, ...page0 } = {}) {
     sent,
     timings,
     traffic: [],
+    windows: [],
     feed: (rows) => rows,
     get core() { return core; },
+    get audibility() { return audibility; },
+    warning(windows) { return status(notHeard(windows, audibility, now), now, now); },
     get stored() { return JSON.parse(text ?? '{}'); },
     list: (site, env) => r.stored.sets?.[siteKey(site, env)]?.list ?? [],
     // A poll: app.js sends an update, and polls again at once after every `hfs:tune` it gets. Returns
@@ -134,7 +141,7 @@ function rig({ stored = null, ...page0 } = {}) {
     poll(age = 0) {
       for (let n = 0, moved = false; ; n++) {
         const before = sent.length;
-        moved = core.update({ at: now, dataAt: now - age * 1000, site: pg.site, env: pg.env, floor: pg.slider, trim: pg.tuned.trim, learned: pg.tuned.floor, aircraft: [], tracks: paged(pg.site, pg.tuned.trim), windows: [], taxiing: [] }) || moved;
+        moved = core.update({ at: now, dataAt: now - age * 1000, site: pg.site, env: pg.env, floor: pg.slider, trim: pg.tuned.trim, learned: pg.tuned.floor, aircraft: [], tracks: paged(pg.site, pg.tuned.trim), windows: r.windows, taxiing: [] }) || moved;
         if (sent.length === before) return moved;
         assert.ok(n < 3, 'the page and the panel settle on one tuning and stop talking');
       }
@@ -676,5 +683,43 @@ test('old saved environment settings keep their choice and manual warning level'
     r.pg.setEnv('warehouse');
     r.poll();
     assert.deepEqual([r.pg.env, r.pg.slider], ['warehouse', 30]);
+  }
+});
+
+
+test('quiet real listening downgrades a helicopter and stopping or a demo restores it', () => {
+  const r = rig();
+  const win = { hex: 'rotor1', category: 'A7', start: START, end: START + 180_000 };
+  r.windows = [win];
+  r.poll();
+  r.core.begin('mic', RATE);
+  r.listen(50, quiet());
+  assert.deepEqual(r.audibility.hexes, ['rotor1']);
+  assert.equal(r.warning([win]).state, 'soon');
+  assert.equal(r.warning([win, { ...win, hex: 'jet001', category: 'A3' }]).state, 'hold');
+  r.core.stop();
+  assert.deepEqual(r.audibility.hexes, []);
+  assert.equal(r.warning([win]).state, 'hold');
+  r.core.begin('demo', RATE);
+  r.listen(50, quiet());
+  assert.deepEqual(r.audibility.hexes, []);
+});
+
+test('mute, background reset, changed environment and stale flight data remove quiet evidence', () => {
+  for (const reset of [
+    (r) => r.core.mute(true),
+    (r) => r.core.again(),
+    (r) => { r.pg.setEnv('indoors'); r.poll(); },
+    (r) => r.listen(5, quiet(), 30),
+    (r) => { r.poll(30); r.poll(); },
+  ]) {
+    const r = rig();
+    r.windows = [{ hex: 'rotor1', category: 'A7', start: START, end: START + 180_000 }];
+    r.poll();
+    r.core.begin('mic', RATE);
+    r.listen(50, quiet());
+    assert.deepEqual(r.audibility.hexes, ['rotor1']);
+    reset(r);
+    assert.deepEqual(r.audibility.hexes, []);
   }
 });

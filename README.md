@@ -79,6 +79,8 @@ While live aircraft are watched, the server asks Open-Meteo's free forecast API 
 
 **Listen with the microphone** compares what the set hears with the predictions. It learns the background, matches aircraft by their Doppler pitch or by when the noise rose, reports noise no tracked aircraft explains, and can tune the warning level after several aircraft. Every threshold is a guess. **Try it with demo sound** runs the same steps on made-up sound.
 
+A helicopter still predicted audible can drop to **Heads up**, labelled **not heard**, after 20 continuous seconds of ready, real microphone listening during its hold (sound travel included). Any rise of at least 3 dB, aircraft-like noise or engine match restores its hold for the rest of that window. Other aircraft keep their holds. Stopping, muting, resetting the background, changing the set or environment, stale data, estimates and demo sound give no quiet evidence. Evidence expires after 2 s without audio; nothing is saved or uploaded. The normal hold-ending confirmation still applies. `shortcut:` the wait and rise thresholds need more aircraft and microphone inputs.
+
 ## Privacy
 
 The sound is analysed in the browser and is never recorded, stored or sent. Settings stay in the browser. The location is asked for only when **Use my location** is pressed. The server holds addresses looked up, and IP addresses, in memory for up to a day, never on disk. Nothing else about a session is kept unless the visitor switches on **Share data with the developer**, which is offered only when `LOG_DIR` is set. [`public/about.html`](public/about.html) lists what is sent where.
