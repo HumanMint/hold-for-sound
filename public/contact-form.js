@@ -19,7 +19,7 @@ const turnstile = () => loading ??= new Promise((done, fail) => {
 });
 
 function build(sitekey) {
-  document.querySelector('footer > p').insertAdjacentHTML('beforeend', ' <span class="contact-at">· <button type="button" class="quiet contact-open" aria-haspopup="dialog">Contact me</button></span>');
+  document.querySelector('footer .pills').insertAdjacentHTML('afterbegin', '<button type="button" class="quiet contact-open" aria-haspopup="dialog">Contact me</button>');
   document.body.insertAdjacentHTML(
     'beforeend',
     `<dialog id="contact" class="setup-dialog contact-dialog" aria-labelledby="contact-title">

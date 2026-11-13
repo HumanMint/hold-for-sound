@@ -91,9 +91,12 @@ input[type='range'] { display: block; width: 100%; min-height: 2.75rem; margin: 
 .contact-send { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
 .contact-send button { min-width: 8rem; }
 #contact-said { font-size: var(--text-s); color: var(--ink-2); }
-footer p:has(.contact-at) { max-width: none; }
-footer .contact-at { white-space: nowrap; }
-footer .contact-open { min-height: 2rem; padding: 0.25rem 0.625rem; font-size: inherit; vertical-align: baseline; }
+/* The footer's links: text links, then the contact form and the version as two small buttons, which
+   wrap together onto a line of their own on a narrow screen. */
+footer .links { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; max-width: none; }
+footer .pills { display: inline-flex; gap: 0.5rem; }
+footer a { white-space: nowrap; }
+footer .pill, footer .contact-open { display: inline-flex; align-items: center; min-height: 2rem; padding: 0.25rem 0.625rem; font: inherit; font-weight: 600; color: var(--ink); text-decoration: none; background: none; border: 1px solid var(--line); border-radius: var(--radius); }
 @media (max-width: 47.99rem) {
   dialog { padding: 1.25rem; }
   .dialog-heading { margin-bottom: 1.5rem; }

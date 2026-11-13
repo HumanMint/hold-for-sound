@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Patch notes · Hold for Sound</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="theme.css">
+<style>
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; padding: 1.5rem 1rem 3rem; background: var(--bg); color: var(--ink); font: 400 var(--text-m) / 1.5 var(--font-ui); -webkit-text-size-adjust: 100%; }
+main { max-width: 40rem; margin: 0 auto; }
+h1 { margin: 0 0 1.5rem; font: 800 var(--text-l) / 1.2 var(--font); }
+h2 { margin: 2rem 0 0.25rem; font-size: 1.25rem; line-height: 1.3; }
+h2 small { margin-left: 0.5rem; font-size: var(--text-s); font-weight: 400; color: var(--ink-2); }
+p, ul { margin: 0.5rem 0 0; }
+ul { padding-left: 1.25rem; }
+li + li { margin-top: 0.375rem; }
+a { color: var(--accent); }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<main>
+<h1><a href="./">Hold for Sound</a></h1>
+<p>Patch notes · <a href="https://github.com/HumanMint/hold-for-sound" target="_blank" rel="noopener">Source on GitHub</a></p>
+
+<!-- The newest version comes first; its number matches the footer and package.json (test/version.test.js). -->
+<h2 id="v1.1">v1.1 <small>13 November 2026</small></h2>
+<ul>
+  <li>Loudness by aircraft type and flight phase. Jets are louder behind than ahead; helicopters louder descending.</li>
+  <li>Distant aircraft are predicted louder: standard ground and air losses, by engine type.</li>
+  <li>Weather: low aircraft can be louder on still nights, and up to 3 dB quieter upwind.</li>
+  <li>New setting: <b>Warehouse</b>, for a lightweight or converted stage.</li>
+  <li>What the microphone learned starts over.</li>
+  <li>Patch notes, and a link to the source.</li>
+</ul>
+
+<h2 id="v1.0">v1.0 <small>11 November 2026</small></h2>
+<ul>
+  <li>First public version.</li>
+  <li>Earlier warnings of takeoffs.</li>
+  <li>Checked every 10 s while an aircraft may matter soon, less often while the sky is quiet.</li>
+  <li>Pitch curves of passing aircraft are fitted and drawn on the timeline.</li>
+  <li><b>Didn't load</b> when the page fails to start.</li>
+  <li><b>Contact me</b> form.</li>
+</ul>
+</main>
+</body>
+</html>
