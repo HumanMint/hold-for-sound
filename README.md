@@ -52,7 +52,7 @@ The microphone choices keep separate learned observations: Outdoors, Indoors (wi
 `shortcut:` helicopters retain 80% of each building loss for rotor thump; the factor needs measured low-frequency data. Jets keep the full loss because the indoor basis already measures aircraft noise; no frequency-specific evidence supports a separate jet factor yet. Roof leakage and low-frequency rumble remain uncertainties.
 
 - On a runway, or on its centreline up to 200 m before its end: it accelerates, lifts off and climbs straight out. At 10 knots or more and speeding up, it is taken to be rolling.
-- Stopped at a holding point beside a runway end: treated like a taxiing aircraft, which may take off.
+- Stopped at a holding point beside a runway end: treated like a taxiing aircraft, which may take off. For taxi guesses on a runway with no observed use, fresh 10 m wind of at least 3 m/s excludes an end with at least 2 m/s of tailwind. Observed runway use and an aircraft already lined up or rolling take priority. Calm, crosswind, missing or stale weather leaves the guess unchanged. These wind cutoffs are uncalibrated guesses (`shortcut:`); the advisory for unseen departures still covers both ends.
 - On final approach: it follows the centreline down, touches down and rolls out, quieter as it slows.
 - After landing, still fast on the runway: the rest of its rollout.
 - A helicopter: judged by its last minute of flight, with a widening spread of headings.

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ENVIRONMENTS, predict, ifDeparts, unseen } from '../public/predict.js';
+import { ENVIRONMENTS, predict, ifDeparts, unseen, windEnds } from '../public/predict.js';
 import { remember, motion } from '../public/motion.js';
 import { status } from '../public/status.js';
 
@@ -259,4 +259,42 @@ test('the loudness scale stays near the one the recorded reference passes were m
   const abeam = peak({ hex: 'b', t: 'E75L', category: 'A3', lat: north(-6000), lon: -118 + 380 / 92185, alt_baro: 300, gs: 140, track: 0, baro_rate: -700, seen_pos: 0 });
   assert.ok(overhead > 67.24 - 3 && overhead < 67.24 + 1, `overhead: ${overhead}, was 67.24`);
   assert.ok(abeam > 68.25 && abeam < 68.25 + 6, `low and to the side: ${abeam}, was 68.25`);
+});
+
+const windRunway = { airport: 'TEST', ends: [{ id: '18', lat: 34.01, lon: -118 }, { id: '36', lat: 33.99, lon: -118 }] };
+const windNow = 10_000_000;
+const freshWind = { at: windNow, wind_speed_10m: 5, wind_direction_10m: 180 };
+
+test('wind picks the headwind end from true geometry', () => {
+  assert.deepEqual(windEnds(windRunway, freshWind, windNow).map(e => e.id), ['18']);
+  assert.deepEqual(windEnds(windRunway, { ...freshWind, wind_direction_10m: 0 }, windNow).map(e => e.id), ['36']);
+});
+
+test('observed use of either end overrides wind on that runway only', () => {
+  for (const id of ['18', '36']) assert.equal(windEnds(windRunway, freshWind, windNow, new Set([`TEST ${id}`])), windRunway.ends);
+  assert.equal(windEnds(windRunway, freshWind, windNow, new Set(['OTHER 36'])).length, 1);
+});
+
+test('calm, absent, stale, future and invalid weather leave both ends', () => {
+  for (const w of [null, { ...freshWind, wind_speed_10m: 2.99 }, { ...freshWind, at: windNow - 3600_001 }, { ...freshWind, at: windNow + 1 }, { ...freshWind, wind_direction_10m: null }, { ...freshWind, wind_speed_10m: NaN }]) {
+    assert.equal(windEnds(windRunway, w, windNow), windRunway.ends);
+  }
+  assert.equal(windEnds(windRunway, freshWind, undefined), windRunway.ends);
+});
+
+test('crosswind and weak along-runway components do not exclude the opposite end', () => {
+  for (const from of [90, 270, 70]) assert.equal(windEnds(windRunway, { ...freshWind, wind_direction_10m: from }, windNow), windRunway.ends);
+  assert.equal(windEnds(windRunway, { ...freshWind, wind_direction_10m: 60 }, windNow).length, 1);
+});
+
+test('taxi warning uses wind only without observed use, and never changes a roll', () => {
+  const ac = { hex: 'abc789', category: 'A3', alt_baro: 'ground', gs: 8, lat: 34.0101, lon: -117.999 };
+  const opts = { loss: 0, floor: -Infinity, runways: [windRunway], weatherAt: windNow };
+  assert.equal(ifDeparts(ac, site, opts).runway, '18');
+  const wind = { ...freshWind, wind_direction_10m: 0 };
+  assert.equal(ifDeparts(ac, site, { ...opts, weather: wind }).runway, '36');
+  assert.equal(ifDeparts(ac, site, { ...opts, weather: wind }, new Set(['TEST 18'])).runway, '18');
+  const rolling = { ...ac, lat: 34.005, lon: -118, gs: 80, track: 180 };
+  assert.equal(predict(rolling, site, { ...opts, weather: wind }).runway, '18');
+  assert.equal(predict({ ...rolling, gs: 0 }, site, { ...opts, weather: wind }).runway, '18');
 });
