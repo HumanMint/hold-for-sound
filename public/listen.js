@@ -32,6 +32,7 @@ const CONSENT = 'Audio is not recorded or sent.';
 const send = (name, detail) => document.dispatchEvent(new CustomEvent(name, { detail }));
 // When the banner said Hold: [from, to] in ms, the last one open (to: null) while it still does.
 const banner = [];
+let quiet = null; // hfs:status `notHeard`
 const core = createCore({
   load() {
     try {
@@ -514,7 +515,7 @@ function draw() {
 
   // When the page expects to be holding: the same moments the banner counts down to.
   c.fillStyle = paint.hold;
-  for (const [a, b] of held(planes, feed.windows, feed.at, floor, banner.map(([since, until]) => [since, until ?? now]))) if (b >= from && a <= to) c.fillRect(Math.round(X(a)), rail.y, Math.max(2 * k, Math.round(X(b) - X(a))), rail.h);
+  for (const [a, b] of held(planes, feed.windows.filter((w) => w.hex !== quiet), feed.at, floor, banner.map(([since, until]) => [since, until ?? now]))) if (b >= from && a <= to) c.fillRect(Math.round(X(a)), rail.y, Math.max(2 * k, Math.round(X(b) - X(a))), rail.h);
 
   // Where the tones of a matched aircraft should be: over what was heard, to check by eye, and on ahead.
   if (ear) {
@@ -700,6 +701,7 @@ document.addEventListener('hfs:select', (e) => {
   tick();
 });
 document.addEventListener('hfs:status', (e) => {
+  quiet = e.detail.notHeard ?? null; // a helicopter not heard puts no hold on the rail ahead
   const open = banner.at(-1)?.[1] === null;
   if (e.detail.state === 'hold' && !open) banner.push([Date.now(), null]);
   else if (e.detail.state !== 'hold' && open) banner.at(-1)[1] = Date.now();

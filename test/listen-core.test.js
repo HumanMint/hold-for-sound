@@ -723,3 +723,17 @@ test('mute, background reset, changed environment and stale flight data remove q
     assert.deepEqual(r.audibility.hexes, []);
   }
 });
+
+test('one helicopter leaving keeps the evidence gathered for another', () => {
+  const r = rig();
+  const a = { hex: 'rotor1', category: 'A7', start: START, end: START + 180_000 };
+  const b = { ...a, hex: 'rotor2' };
+  r.windows = [a, b];
+  r.poll();
+  r.core.begin('mic', RATE);
+  r.listen(50, quiet());
+  assert.deepEqual(r.audibility.hexes, ['rotor1', 'rotor2']);
+  r.windows = [b];
+  r.listen(1, quiet());
+  assert.deepEqual(r.audibility.hexes, ['rotor2'], 'rotor2 is not started over: a heard one would have stayed heard the same way');
+});

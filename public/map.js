@@ -47,6 +47,7 @@ const put = (el, text) => el.textContent !== text && (el.textContent = text);
 const still = matchMedia('(prefers-reduced-motion: reduce)');
 
 let last = null; // the latest hfs:update
+let quiet = null; // a helicopter the microphone has not heard, from hfs:status: not drawn as a hold
 let banner = ''; // the page's status, from hfs:status: 'hold', 'soon', 'clear', or '' for none
 // The feed can be behind while requests still succeed, so freshness is judged by the data, not the poll.
 const staleMs = () => last.staleMs ?? STALE_MS;
@@ -182,7 +183,7 @@ function text(string, x, y, colour, font, align = 'center') {
 }
 
 const name = (c) => c.ac.flight?.trim() || c.hex; // the same name the list gives it
-const state = (c, now) => (!c.win || c.win.end <= now ? null : c.win.start <= now ? 'hold' : c.win.start - now < SOON_MS ? 'soon' : 'later');
+const state = (c, now) => (!c.win || c.win.end <= now ? null : c.win.start <= now ? (c.hex === quiet ? 'soon' : 'hold') : c.win.start - now < SOON_MS ? 'soon' : 'later');
 const rank = (s) => ['hold', 'soon', 'later', null].indexOf(s);
 
 // Where an aircraft is `t` seconds after the update: along its predicted path, or where it was reported
@@ -546,7 +547,7 @@ function words() {
     .filter((x) => state(x, now))
     .sort((a, b) => a.win.start - b.win.start)
     .slice(0, 6)
-    .map((x) => `${name(x)}, ${far(drawn.get(x.hex) ?? x.at)}, ${x.win.start <= now ? 'heard now' : `heard in ${mmss(x.win.start - now)}`}${x.lost ? ' (estimate: contact lost)' : ''}`);
+    .map((x) => `${name(x)}, ${far(drawn.get(x.hex) ?? x.at)}, ${x.win.start <= now ? (x.hex === quiet ? 'not heard' : 'heard now') : `heard in ${mmss(x.win.start - now)}`}${x.lost ? ' (estimate: contact lost)' : ''}`);
   put(
     $('.map-says'),
     last.dataAt === 0 ? 'No flight data for this location yet.' : stale
@@ -729,6 +730,7 @@ function run() {
 document.addEventListener('visibilitychange', run);
 document.addEventListener('hfs:status', (e) => {
   banner = e.detail.state;
+  quiet = e.detail.notHeard ?? null;
   draw();
 });
 still.addEventListener('change', () => {

@@ -79,7 +79,8 @@ document.addEventListener('hfs:share', (e) => {
 //               up after its prediction ended, `early` when that ended well before it was due, and
 //               `unsure` the hex of an aircraft lost while still due (null for none). Sent again when
 //               any of it changes. `notHeard` is the hex of a current helicopter downgraded by the
-//               microphone (null for none); the state remains heads up.
+//               microphone (null for none); the state remains heads up, and the map and timeline
+//               show no hold for it either.
 //   hfs:select  from anyone. detail: { hex } or { hex: null }. Everyone highlights that aircraft.
 //   hfs:tune    from listen.js. detail: { floor, trim, early, demo }: what the microphone has learned
 //               about this set and environment, with floor: null when that is nothing. `early: true`
@@ -182,7 +183,7 @@ function log(kind, text) {
 function save() {
   if (real) return; // nothing a demo changed is kept
   try {
-    localStorage.setItem('hfs', JSON.stringify({ q: form.q.value, env: form.env.value, floor: form.floor.value, manual, offset, site }));
+    localStorage.setItem('hfs', JSON.stringify({ q: form.q.value, env: form.env.value, floor: form.floor.value, manual, offset, site, crew: crewLevel }));
   } catch {}
 }
 
@@ -499,7 +500,8 @@ function render() {
     const then = next ? `Next: ${about(next)}` : '';
     show('soon', 'Heads up', '', 'an aircraft may still be audible', `${mayDepart}Listen before you roll: lost contact with ${label(unsure)} ${mmss(now - unsure.seenAt)} ago. ${then}`);
   } else if (quiet) {
-    show('soon', 'Heads up', '', 'not heard', label(quiet));
+    // Only this helicopter is downgraded: the next aircraft's countdown and a possible takeoff still say.
+    show('soon', 'Heads up', next ? mmss(until - now) : '', next ? 'until an aircraft is audible' : 'not heard', `${mayDepart}${label(quiet)}: not heard.${next ? ` Next: ${about(next)}` : ''}`);
   } else if (state === 'soon') {
     show('soon', 'Heads up', mmss(until - now), 'until an aircraft is audible', `${mayDepart}${about(next)}`);
   } else if (next) {
@@ -555,7 +557,10 @@ function render() {
 }
 
 form.addEventListener('input', (e) => {
-  if (['env', 'floor'].includes(e.target.name)) crewLevel = null;
+  if (['env', 'floor'].includes(e.target.name) && crewLevel != null) {
+    crewLevel = null;
+    save();
+  }
   if (e.target.name === 'env') {
     untune();
     form.floor.value = ENVIRONMENTS[form.env.value].floor;
@@ -758,23 +763,33 @@ try {
     // after the first update, and your offset from what it learned is applied again.
     form.floor.value = saved.manual ?? saved.floor;
     offset = saved.offset ?? 0;
+    crewLevel = Number.isFinite(saved.crew) ? saved.crew : null; // a linked level not yet taken up by learning
     site = saved.site;
   }
 } catch {}
-const crew = crewParse(location.hash, +form.floor.min, +form.floor.max);
 const clearCrew = () => history.replaceState(history.state, '', location.pathname + location.search);
-if (location.hash && !crew) clearCrew();
-let useCrew = crew && (!site || crewMatches(crew, site, form.env.value, savedLevel));
-if (crew && !useCrew) {
+// A crew link, on load or opened in a tab already showing the page. True when it is watched at once.
+function arrive(level) {
+  const crew = crewParse(location.hash, +form.floor.min, +form.floor.max);
+  if (location.hash && !crew) clearCrew();
+  if (!crew) return false;
+  if (!site || crewMatches(crew, site, form.env.value, level)) {
+    clearCrew();
+    receiveCrew(crew);
+    return true;
+  }
   const confirm = $('crew-confirm');
+  if (confirm.open) return false; // one question at a time
   confirm.addEventListener('close', () => {
     clearCrew();
     if (confirm.returnValue === 'use') receiveCrew(crew);
   }, { once: true });
   confirm.showModal();
+  return false;
 }
 showSetup();
-if (useCrew) { clearCrew(); receiveCrew(crew); }
+const useCrew = arrive(savedLevel);
+addEventListener('hashchange', () => arrive(form.floor.value));
 if (!site && !useCrew) settings.showModal();
 if (!useCrew && site && !site.runways) form.requestSubmit(); // saved before runways were looked up: look the address up again
 else if (!useCrew && site) {

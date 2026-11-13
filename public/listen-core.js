@@ -202,7 +202,6 @@ export function createCore({ load, save, send, clock = Date.now, changed = () =>
         afresh();
       }
       feed = detail;
-      if ([...quiet.keys()].some((hex) => !feed.windows.some((w) => w.hex === hex && w.start <= clock() && w.end > clock() && !w.lost && !w.unsure))) clearQuiet();
       for (const w of feed.tracks) {
         const spans = guessed.get(w.hex) ?? [];
         const open = spans.at(-1)?.[1] === Infinity;
