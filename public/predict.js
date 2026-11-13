@@ -372,9 +372,23 @@ export function predict(ac, site, { loss, floor, runways = [], landed = false, t
   );
 }
 
+// Wind only breaks an unobserved runway's tie; geometry supplies true bearings, not runway numbers.
+export function windEnds(rw, weather, now, inUse = new Set()) {
+  const ends = rw.ends;
+  if (ends.some(e => inUse.has(`${rw.airport} ${e.id}`))) return ends;
+  if (!weather || !Number.isFinite(now) || !Number.isFinite(weather.at) || now < weather.at || now - weather.at > 3600_000) return ends;
+  const { wind_speed_10m: speed, wind_direction_10m: from } = weather;
+  // shortcut: 3 m/s wind and 2 m/s along the runway are uncalibrated cutoffs; revisit with more departures.
+  if (!Number.isFinite(speed) || speed < 3 || !Number.isFinite(from) || from < 0 || from > 360) return ends;
+  const v = local(ends[1], ends[0]);
+  const headwind = speed * (v.x * Math.sin(from * RAD) + v.y * Math.cos(from * RAD)) / Math.hypot(v.x, v.y);
+  return Math.abs(headwind) >= 2 ? [ends[headwind > 0 ? 0 : 1]] : ends;
+}
+
 // For an aircraft still taxiing, or stopped at a holding point beside a runway end: the loudest it
 // would be if it took off, or null. It is assumed to use the runway end it is about to enter, else a
 // direction seen in use (`inUse` holds "AIRPORT RUNWAY"), else any runway at its airport.
+// Fresh wind excludes clear tailwind ends only on runways with no observed use.
 // shortcut: a holding point is told only by where it is (HOLDING_M); an aircraft parked that close to a
 // runway end is taken for one waiting to depart.
 export function ifDeparts(ac, site, opts, inUse = new Set()) {
@@ -394,7 +408,10 @@ export function ifDeparts(ac, site, opts, inUse = new Set()) {
   if (!(ends[0]?.away < 5000)) return null; // not at an airport we have runways for
   const here = ends.filter((e) => e.key.split(' ')[0] === ends[0].key.split(' ')[0]);
   const used = here.filter((e) => inUse.has(e.key));
-  const likely = ends[0].away < 500 && !inUse.has(ends[0].opposite) ? [ends[0]] : used.length ? used : here;
+  const allowed = new Set((opts.runways ?? []).flatMap(rw => windEnds(rw, opts.weather, opts.weatherAt, inUse).map(e => `${rw.airport} ${e.id}`)));
+  const possible = here.filter(e => allowed.has(e.key));
+  const near = possible[0];
+  const likely = near?.away < 500 && !inUse.has(near.opposite) ? [near] : used.length ? used : possible;
   return (
     likely
       .map((end) => predict({ ...ac, lat: end.lat, lon: end.lon, gs: 0, track: undefined, true_heading: undefined, seen_pos: 0 }, site, opts))
@@ -414,7 +431,7 @@ const DEPARTS = [[2400, 'A5'], [1500, 'A3'], [900, 'A2'], [0, 'A1']];
 // the set: { airport, runway, category, leadS, peakDb }, soonest first. `leadS` is how long after it
 // starts to roll it is heard, the most warning the page could give from the moment it is rolling.
 // `opts` as for predict(). Depends only on the set and the settings, not on the traffic.
-// shortcut: both directions of every runway count; the direction in use (wind) would narrow it.
+// Both directions count here: wind is too weak an assurance to hide an unseen departure.
 export function unseen(site, opts) {
   return (opts.runways ?? [])
     .flatMap((rw) => {
