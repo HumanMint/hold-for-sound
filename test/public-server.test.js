@@ -548,7 +548,8 @@ test('a public instance can sit behind the access password, and its pages run un
   assert.equal((await request('/about.html', https)).status, 200);
   assert.equal((await request('/', { ...https, 'content-type': 'application/x-www-form-urlencoded' }, 'POST', undefined, 'password=wrong')).status, 401);
   const right = await request('/', { ...https, 'content-type': 'application/x-www-form-urlencoded' }, 'POST', undefined, 'password=quiet-on-set');
-  assert.equal(right.status, 200);
+  assert.equal(right.status, 303);
+  assert.equal(right.headers.location, './');
   const cookie = right.headers['set-cookie'][0];
   assert.match(cookie, /HttpOnly; SameSite=Lax; Secure/);
   assert.equal((await request('/app.js', { ...https, cookie: cookie.split(';')[0] })).status, 200);

@@ -457,7 +457,7 @@ async function handle(req, res) {
       res.setHeader('permissions-policy', 'camera=(), microphone=(self), geolocation=(self)');
       // Turnstile, when the contact form has it, is a script and a frame from Cloudflare.
       const turnstile = SITEKEY ? ' https://challenges.cloudflare.com' : '';
-      res.setHeader('content-security-policy', `default-src 'self'; script-src 'self' 'sha256-fOyL/EgYifGLDk26qXFnthKltRdK5PQBM7j6dKRHmCU='${LOGIN_HASHES}${turnstile}; style-src 'self' 'unsafe-inline'; img-src 'self' https://tile.openstreetmap.org; connect-src 'self';${SITEKEY ? ` frame-src${turnstile};` : ''} object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
+      res.setHeader('content-security-policy', `default-src 'self'; script-src 'self' 'sha256-8n9NOiiqlvU4p4fU6lFhVPl6IaSmOiMhxC37XEOOXb0='${LOGIN_HASHES}${turnstile}; style-src 'self' 'unsafe-inline'; img-src 'self' https://tile.openstreetmap.org; connect-src 'self';${SITEKEY ? ` frame-src${turnstile};` : ''} object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
       if (!req.url.startsWith('/') || req.url.startsWith('//')) return json(400, { error: 'not an address' });
       if (req.headers.host !== PUBLIC_HOST) return json(404, { error: 'not found' });
       if (req.method !== 'GET' && req.headers.origin !== `https://${PUBLIC_HOST}`) return json(403, { error: 'Same-origin requests only.' });

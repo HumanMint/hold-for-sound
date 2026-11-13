@@ -9,7 +9,7 @@ const LOGIN = WRONG.replace(/ *<p id="wrong">.*\n/, '');
 // under, so the page itself goes to its own address, without the key and ending in a slash.
 const HEAD = '<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title>Hold for Sound</title>';
 const WELCOME = `${HEAD}
-<script>location.replace(location.pathname.replace(/\\/*$/, '/'))</script>`;
+<script>location.replace(location.pathname.replace(/\\/*$/, '/') + location.hash)</script>`;
 // Sent for a link that carries the password as ?key=. The browser keeps a cookie to the folder of
 // the address it came from, so the key is only traded for the cookie at the address that ends in a
 // slash: this page goes there first if it has to, posts the key as the login form would, and then
@@ -17,8 +17,8 @@ const WELCOME = `${HEAD}
 // this host.
 const TRADE = `${HEAD}
 <script>
-if (!location.pathname.endsWith('/')) location.replace(location.pathname + '/' + location.search);
-else fetch(location.pathname, { method: 'POST', body: new URLSearchParams({ password: new URLSearchParams(location.search).get('key') }) }).finally(() => location.replace(location.pathname));
+if (!location.pathname.endsWith('/')) location.replace(location.pathname + '/' + location.search + location.hash);
+else fetch(location.pathname, { method: 'POST', body: new URLSearchParams({ password: new URLSearchParams(location.search).get('key') }) }).finally(() => location.replace(location.pathname + location.hash));
 </script>`;
 // Everything login.html loads, and the notices page (public/about.html). Nothing else is served without access.
 const OPEN = new Set(['/about.html', '/theme.css', '/icon.svg', '/fonts/barlow-semi-condensed-500.woff2', '/fonts/barlow-semi-condensed-700.woff2', '/fonts/barlow-semi-condensed-800.woff2']);
@@ -50,8 +50,9 @@ export function gate(password) {
     if (path === '/' && key != null && tried == null) return known ? { ok: true, ...html(200, WELCOME) } : { ok: false, waiting: true, ...html(200, TRADE) };
     if (path === '/' && tried != null) {
       if (!known && !same(token(tried), want)) return { ok: false, wrong: true, ...html(401, WRONG) };
+      // A relative 303 loads the page with GET and preserves the browser's fragment.
       // No Path: the browser keeps the cookie to the directory the page is published under.
-      return { ok: true, ...html(200, WELCOME, { 'set-cookie': `hfs=${want}; Max-Age=${YEAR_S}; HttpOnly; SameSite=Lax${https ? '; Secure' : ''}` }) };
+      return { ok: true, ...html(303, WELCOME, { location: './', 'set-cookie': `hfs=${want}; Max-Age=${YEAR_S}; HttpOnly; SameSite=Lax${https ? '; Secure' : ''}` }) };
     }
     if (known) return { ok: true };
     if (OPEN.has(path)) return { ok: false };

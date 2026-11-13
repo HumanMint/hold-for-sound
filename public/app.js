@@ -1,5 +1,6 @@
 import { ENVIRONMENTS, CLASS_NAME, HORIZON_S, ifDeparts, unseen } from './predict.js';
 import { freshWeather } from './weather.js';
+import { parse as crewParse, link as crewLink, matches as crewMatches } from './crew.js';
 import { follow } from './lost.js';
 import { notHeard } from './unheard.js';
 import { widen } from './widen.js';
@@ -118,6 +119,7 @@ let timing = { offsets: {}, lag: null }; // how late the feed has been running h
 const widened = new Map(); // hex -> the last window widened by it, kept to its widened end (widen.js)
 let offset = 0;
 let manual = null;
+let crewLevel = null; // linked manual level, awaiting this device's first learned floor
 let real = null; // while a demo is tuning the page: { tuned, offset, manual, floor } from before it, to put back
 
 // Put back everything a demo changed.
@@ -132,6 +134,7 @@ function endDemo() {
 // listen.js then sends what it knows about the new one.
 function untune() {
   audibility = null;
+  crewLevel = null;
   endDemo();
   if (manual != null) form.floor.value = manual;
   tuned = { floor: null, trim: {} };
@@ -186,6 +189,7 @@ function save() {
 // The one-line summary the setup form folds down to, and who set the warning level.
 function showSetup() {
   const mic = tuned.floor != null;
+  $('crew').hidden = !site;
   $('floorOut').textContent = form.floor.value;
   $('where').textContent = site ? site.name : 'Choose a location';
   $('change').textContent = site ? 'Change' : 'Set up';
@@ -551,6 +555,7 @@ function render() {
 }
 
 form.addEventListener('input', (e) => {
+  if (['env', 'floor'].includes(e.target.name)) crewLevel = null;
   if (e.target.name === 'env') {
     untune();
     form.floor.value = ENVIRONMENTS[form.env.value].floor;
@@ -566,6 +571,11 @@ document.addEventListener('hfs:tune', (e) => {
   else endDemo();
   tuned = { floor: e.detail.floor ?? null, trim: e.detail.trim ?? {}, early: !!e.detail.early };
   if (tuned.floor != null) {
+    if (crewLevel != null && !e.detail.demo) {
+      manual = crewLevel;
+      offset = crewLevel - tuned.floor;
+      crewLevel = null;
+    }
     manual ??= +form.floor.value;
     form.floor.value = Math.round(tuned.floor + offset); // the input clamps it to its own range
   } else {
@@ -608,7 +618,7 @@ form.addEventListener('change', () => {
 // Look up what is in the field and start watching it. `mine`: the field holds this device's location,
 // which the server takes as typed coordinates, so there is no address to find or to misspell.
 let watching = 0;
-async function watch(mine) {
+async function watch(mine, crew) {
   const ticket = ++watching;
   const query = form.q.value.trim();
   const example = [...$('examples').querySelectorAll('button')].find(button => button.dataset.q === query);
@@ -635,6 +645,12 @@ async function watch(mine) {
       $('none').hidden = true;
     }
     site = data;
+    if (crew) {
+      untune();
+      form.env.value = crew.env;
+      form.floor.value = crew.level;
+      crewLevel = +form.floor.value;
+    }
     rolls = { key: '', list: [] }; // new runways or elevation: work the takeoffs out again
     save();
     showSite();
@@ -652,8 +668,35 @@ async function watch(mine) {
 }
 form.addEventListener('submit', (e) => {
   e.preventDefault();
-  watch();
+  watch(false, applyingCrew);
+  applyingCrew = null;
 });
+
+let applyingCrew = null;
+$('crew').addEventListener('click', async () => {
+  if (!site) return;
+  const url = crewLink(location.href, site, form.env.value, form.floor.value);
+  $('crew-url').hidden = true;
+  if (navigator.share) {
+    try { await navigator.share({ url }); return; }
+    catch (err) { if (err.name === 'AbortError') return; }
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    $('crew').textContent = 'Copied';
+    setTimeout(() => $('crew').textContent = 'Crew link', 2000);
+  } catch {
+    $('crew-url').value = url;
+    $('crew-url').hidden = false;
+    $('crew-url').select();
+  }
+});
+function receiveCrew(crew) {
+  form.q.value = `${crew.lat}, ${crew.lon}`;
+  form.q.dispatchEvent(new Event('input', { bubbles: true }));
+  applyingCrew = crew;
+  form.requestSubmit();
+}
 
 $('examples').addEventListener('click', (event) => {
   const button = event.target.closest('button[data-q]');
@@ -704,9 +747,11 @@ here.addEventListener('click', () => {
   );
 });
 
+let savedLevel;
 try {
   const saved = JSON.parse(localStorage.getItem('hfs'));
   if (saved) {
+    savedLevel = saved.floor;
     form.q.value = saved.q;
     form.env.value = saved.env;
     // The slider starts at your own setting. If the microphone had moved it, listen.js says so again
@@ -716,10 +761,23 @@ try {
     site = saved.site;
   }
 } catch {}
+const crew = crewParse(location.hash, +form.floor.min, +form.floor.max);
+const clearCrew = () => history.replaceState(history.state, '', location.pathname + location.search);
+if (location.hash && !crew) clearCrew();
+let useCrew = crew && (!site || crewMatches(crew, site, form.env.value, savedLevel));
+if (crew && !useCrew) {
+  const confirm = $('crew-confirm');
+  confirm.addEventListener('close', () => {
+    clearCrew();
+    if (confirm.returnValue === 'use') receiveCrew(crew);
+  }, { once: true });
+  confirm.showModal();
+}
 showSetup();
-if (!site) settings.showModal();
-if (site && !site.runways) form.requestSubmit(); // saved before runways were looked up: look the address up again
-else if (site) {
+if (useCrew) { clearCrew(); receiveCrew(crew); }
+if (!site && !useCrew) settings.showModal();
+if (!useCrew && site && !site.runways) form.requestSubmit(); // saved before runways were looked up: look the address up again
+else if (!useCrew && site) {
   showSite();
   poll();
 }

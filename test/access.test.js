@@ -43,7 +43,7 @@ test('a link that carries the password trades it for the cookie only at the addr
   const run = (pathname) => {
     const did = [];
     const fetch = (to, { method, body }) => (did.push(`${method} ${to} ${body}`), { finally: (then) => then() });
-    new Function('location', 'fetch', script)({ pathname, search: '?key=quiet-on-set', replace: (to) => did.push(`go ${to}`) }, fetch);
+    new Function('location', 'fetch', script)({ pathname, search: '?key=quiet-on-set', hash: '', replace: (to) => did.push(`go ${to}`) }, fetch);
     return did;
   };
   assert.deepEqual(run('/hold-for-sound'), ['go /hold-for-sound/?key=quiet-on-set']); // first to the slash, key and all
@@ -58,14 +58,15 @@ test('a link that carries the password trades it for the cookie only at the addr
 test('a right password sets the cookie and sends the page to its own clean address', () => {
   const welcome = page({ tried: 'quiet-on-set' });
   assert.equal(welcome.ok, true);
-  assert.equal(welcome.status, 200);
+  assert.equal(welcome.status, 303);
+  assert.equal(welcome.headers.location, './');
   assert.deepEqual(admit({ path: '/app.js', cookies: cookie }), { ok: true });
 
   // The server can't see the path it is published under, so the page works its own address out.
   const script = welcome.body.match(/<script>(.*)<\/script>/)[1];
   const lands = (pathname) => {
     let went;
-    new Function('location', script)({ pathname, replace: (to) => (went = to) });
+    new Function('location', script)({ pathname, hash: '', replace: (to) => (went = to) });
     return went;
   };
   assert.equal(lands('/hold-for-sound/'), '/hold-for-sound/');
@@ -123,4 +124,17 @@ test('nothing is served without access but what the login page loads, and the no
   assert.deepEqual(open.sort(), [...new Set([...links, ...loads('../public/about.html'), ...fonts, '/about.html'])].sort());
   assert.deepEqual(links.sort(), ['/icon.svg', '/theme.css']);
   for (const path of open) assert.equal(admit({ path }).ok, false); // served, but not counted as having access
+});
+
+
+test('all login redirects keep the crew fragment', () => {
+  const hash = '#set=33.938,-118.440&env=indoors&level=35';
+  for (const response of [page({}), page({ tried: 'wrong' }), page({ tried: 'quiet-on-set' }), page({ key: 'quiet-on-set' }), page({ key: 'quiet-on-set', cookies: cookie })]) {
+    const script = response.body.match(/<script>([^]*?)<\/script>/)[1];
+    for (const pathname of ['/watch', '/watch/']) {
+      const went = [];
+      new Function('location', 'fetch', script)({ pathname, hash, search: '?key=quiet-on-set', replace: to => went.push(to) }, () => ({ finally: fn => fn() }));
+      for (const to of went) assert.ok(to.endsWith(hash));
+    }
+  }
 });

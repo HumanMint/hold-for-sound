@@ -8,7 +8,7 @@
 <title>Hold for Sound</title>
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <!-- The page may be hosted under a path, and its links are relative, so the address must end in a slash. -->
-<script>if (!location.pathname.endsWith('/')) location.replace(location.pathname + '/' + location.search);</script>
+<script>if (!location.pathname.endsWith('/')) location.replace(location.pathname + '/' + location.search + location.hash);</script>
 <link rel="preload" href="r/RELEASE/fonts/barlow-semi-condensed-800.woff2" as="font" type="font/woff2" crossorigin>
 <!-- Version entry assets when markup changes: older public browsers may still have a cached release. -->
 <link rel="stylesheet" href="r/RELEASE/theme.css">
@@ -50,6 +50,8 @@
         <p id="hereGoes">Asked only when pressed.</p>
       </div>
       <p id="site" aria-live="polite"></p>
+      <button type="button" id="crew" class="quiet" hidden>Crew link</button>
+      <input type="text" id="crew-url" aria-label="Crew link" readonly hidden>
       <fieldset id="examples" class="examples">
         <legend>Try a live location</legend>
         <div>
@@ -78,6 +80,10 @@
       </div>
 
     </form>
+</dialog>
+<dialog id="crew-confirm" aria-labelledby="crew-title">
+  <div class="dialog-heading"><h2 id="crew-title">Replace your set?</h2></div>
+  <form method="dialog"><button value="use">Use crew link</button> <button value="keep" class="quiet" autofocus>Keep mine</button></form>
 </dialog>
 <main>
   <!-- The class says the state: hold, soon, clear, or none while there is nothing to go on. -->

@@ -9,7 +9,7 @@
      must be on the OPEN list there, or it is refused too. -->
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <!-- The page may be hosted under a path, and its links are relative, so the address must end in a slash. -->
-<script>if (!location.pathname.endsWith('/')) location.replace(location.pathname + '/' + location.search);</script>
+<script>if (!location.pathname.endsWith('/')) location.replace(location.pathname + '/' + location.search + location.hash);</script>
 <link rel="stylesheet" href="theme.css">
 <style>
 *, *::before, *::after { box-sizing: border-box; }
