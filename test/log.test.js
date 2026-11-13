@@ -399,3 +399,15 @@ test('once a session\'s spectrogram has stopped, every answer says so: a repeat,
   assert.deepEqual(log.request('POST', batch(ONE, n + 2)), { status: 200, ok: true, spec: false });
   assert.equal(specs(), kept);
 });
+
+test('the log reader preserves every environment key', () => {
+  for (const env of ['outdoors', 'indoors', 'warehouse', 'stage']) {
+    const dir = temp();
+    const log = createLog(dir, { clock: () => DAY });
+    log.request('POST', batch(ONE, 0, [{ k: 'site', at: DAY, lat: 40, lon: -100, env }]));
+    const events = read(join(dir, readdirSync(dir)[0]));
+    assert.equal(events.find((e) => e.k === 'site').env, env);
+    assert.equal(summary(events).where, `40.000, -100.000 ${env}`);
+    rmSync(dir, { recursive: true });
+  }
+});

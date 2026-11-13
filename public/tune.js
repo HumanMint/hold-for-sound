@@ -1,6 +1,6 @@
 // Turns the passes the microphone has observed (see hear.js) into what the page should assume about
 // this set, ready to send as `hfs:tune`. Pure functions of plain JSON. What is learned belongs to one
-// set and one environment (outdoors, indoors, stage), so the caller keeps one stored list for each.
+// set and one environment (outdoors, indoors, warehouse, stage), so the caller keeps one stored list for each.
 //
 //   remember(stored, fresh) → the list to store: `stored` plus the `fresh` observations worth
 //       learning from, cut to the newest 80. Old passes drop off, so it follows a set that changes.

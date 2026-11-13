@@ -13,7 +13,7 @@ npm start   # http://127.0.0.1:8787
 npm test
 ```
 
-It also listens on this machine's Tailscale address when Tailscale is running, never on the local network. Enter the set's address or coordinates, and whether the microphone is outdoors, indoors or on a stage.
+It also listens on this machine's Tailscale address when Tailscale is running, never on the local network. Enter the set's address or coordinates, and whether the microphone is outdoors, indoors, in a warehouse or on a purpose-built soundstage.
 
 ## Try it without live data
 
@@ -44,6 +44,12 @@ All optional, as environment variables:
 ## How it predicts
 
 Every 5 seconds the page asks for the aircraft within 30 nautical miles and steps each one's path forward 8 minutes, estimating the loudness at the set from the aircraft's size, distance, height and the building's insulation. An aircraft is listed when that estimate rises above the warning level.
+
+The microphone choices keep separate learned observations: Outdoors, Indoors (windows shut), Warehouse (a converted or lightweight stage), and Soundstage (purpose-built). Existing saved choices keep their meanings.
+
+`shortcut:` building losses and default warning floors are uncalibrated guesses, to replace with measured levels at the microphone. Loss / floor in dB / dBA: outdoors 0 / 45, indoors 25 / 35, warehouse 25 / 30, soundstage 45 / 25. The warehouse loss is below the roughly 30 dB lightweight-roof estimate, to avoid assuming too much protection; its floor sits between a room and a quiet stage. Indoor 25 follows the closed-window aircraft reductions (24–28 dB). Stage 45 stays below the purpose-built roof STC range (48–55), but STC is not an aircraft-noise reduction measurement and does not guarantee low-frequency protection. Open or tilted windows belong under Outdoors for a conservative warning.
+
+`shortcut:` helicopters retain 80% of each building loss for rotor thump; the factor needs measured low-frequency data. Jets keep the full loss because the indoor basis already measures aircraft noise; no frequency-specific evidence supports a separate jet factor yet. Roof leakage and low-frequency rumble remain uncertainties.
 
 - On a runway, or on its centreline up to 200 m before its end: it accelerates, lifts off and climbs straight out. At 10 knots or more and speeding up, it is taken to be rolling.
 - Stopped at a holding point beside a runway end: treated like a taxiing aircraft, which may take off.

@@ -25,9 +25,11 @@ export const CLASS_NAME = {
 };
 
 // loss: dB the building takes off. floor: default level the set is quiet enough to notice.
+// shortcut: uncalibrated building losses and quiet-set floors; replace with measured in-room levels.
 export const ENVIRONMENTS = {
   outdoors: { loss: 0, floor: 45 },
   indoors: { loss: 25, floor: 35 },
+  warehouse: { loss: 25, floor: 30 },
   stage: { loss: 45, floor: 25 },
 };
 
@@ -303,7 +305,7 @@ export function predict(ac, site, { loss, floor, runways = [], landed = false, t
 
   const heli = ac.category === 'A7';
   const source = (SOURCE_DBA[ac.category] ?? 76) + (trim[ac.category] ?? 0);
-  const wall = heli ? loss * 0.8 : loss; // rotor thump gets through walls better
+  const wall = heli ? loss * 0.8 : loss; // shortcut: uncalibrated rotor-thump allowance; replace with measured low-frequency losses
 
   const samples = [];
   let win = null;

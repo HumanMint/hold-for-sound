@@ -805,3 +805,17 @@ test('the log says what the banner said, held hold and all, not a reckoning of i
   ]);
   assert.ok(!events.some((e) => e.k === 'poll' && 'state' in e), 'a poll does not work out a status of its own');
 });
+
+test('sharing records the warehouse environment and each subsequent change', async () => {
+  const r = rig();
+  r.share.update(update(START, [], { env: 'stage' }));
+  r.share.start();
+  await r.share.flush();
+  for (const env of ['warehouse', 'indoors', 'outdoors']) {
+    r.now += 5000;
+    r.share.update(update(r.now, [], { env }));
+    await r.share.flush();
+  }
+  await r.share.flush();
+  assert.deepEqual(r.events().filter((e) => e.k === 'site').map((e) => e.env), ['stage', 'warehouse', 'indoors', 'outdoors']);
+});

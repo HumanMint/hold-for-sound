@@ -644,3 +644,36 @@ test('the newest fit of each curve is kept to draw, and one with no aircraft giv
   r.core.stop();
   assert.deepEqual(r.core.fitted, []);
 });
+
+test('warehouse observations stay separate through changes and reloads', () => {
+  const r = rig({ env: 'stage', stored: saved([[A, 'stage', 27], [A, 'indoors', 34]]) });
+  r.poll();
+  assert.equal(r.pg.tuned.floor, 27);
+  r.pg.setEnv('warehouse');
+  assert.deepEqual([r.pg.slider, r.pg.tuned.floor, r.pg.tuned.trim], [30, null, {}]);
+  r.poll();
+  assert.deepEqual(r.list(A, 'warehouse'), []);
+  r.reload();
+  assert.deepEqual([r.pg.env, r.pg.slider, r.pg.tuned.floor], ['warehouse', 30, null]);
+  r.pg.setEnv('stage');
+  r.poll();
+  assert.equal(r.pg.tuned.floor, 27);
+  const learned = rig({ env: 'warehouse', stored: saved([[A, 'warehouse', 29], [A, 'stage', 27]]) });
+  learned.poll();
+  learned.reload();
+  assert.equal(learned.pg.tuned.floor, 29);
+  learned.core.forget();
+  learned.poll();
+  assert.equal(learned.list(A, 'stage').length, 4);
+});
+
+test('old saved environment settings keep their choice and manual warning level', () => {
+  for (const env of ['outdoors', 'indoors', 'stage']) {
+    const r = rig({ env, slider: 41 });
+    r.reload();
+    assert.deepEqual([r.pg.env, r.pg.slider, r.pg.tuned.floor], [env, 41, null]);
+    r.pg.setEnv('warehouse');
+    r.poll();
+    assert.deepEqual([r.pg.env, r.pg.slider], ['warehouse', 30]);
+  }
+});

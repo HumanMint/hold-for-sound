@@ -239,3 +239,13 @@ test('takeoffs the feed may show too late: heard where a runway is near, not whe
   assert.equal(at('outdoors', { runways: big })[0]?.category, 'A5');
   assert.equal(at('outdoors', { runways: big, trim: { A5: -12 } })[0]?.category, 'A3');
 });
+
+test('a lightweight stage gives less protection than a purpose-built stage', () => {
+  const at = (env, ac = inbound) => run(ac, env, { floor: -Infinity });
+  assert.deepEqual(ENVIRONMENTS.warehouse, { loss: 25, floor: 30 });
+  assert.equal(at('warehouse').peakDb, at('indoors').peakDb);
+  assert.ok(Math.abs(at('warehouse').peakDb - at('stage').peakDb - 20) < 1e-9);
+  assert.ok(run(inbound, 'warehouse'), 'the lightweight roof must not hide this pass');
+  const heli = { hex: 'def456', category: 'A7', lat: 34, lon: -118, alt_baro: 800, gs: 0 };
+  assert.ok(Math.abs(at('outdoors', heli).peakDb - at('warehouse', heli).peakDb - 20) < 1e-9);
+});
