@@ -1,5 +1,6 @@
 import { ENVIRONMENTS, CLASS_NAME, HORIZON_S, ifDeparts, unseen } from './predict.js';
 import { follow } from './lost.js';
+import { notHeard } from './unheard.js';
 import { widen } from './widen.js';
 import { remember, motion } from './motion.js';
 import { status, steady, staleAfter } from './status.js';
@@ -67,13 +68,14 @@ document.addEventListener('hfs:share', (e) => {
 //               is an estimate. An aircraft
 //               the feed has dropped can still be in `tracks` and `windows`, with no row in `aircraft`
 //               (lost.js has the rules). Nothing may show an estimate as a reported position.
-//   hfs:status  from here when the banner changes. detail: { state, until, checking, early, unsure }:
+//   hfs:status  from here when the banner changes. detail: { state, until, checking, early, unsure, notHeard }:
 //               `state` is 'hold', 'soon', 'clear', or '' when there is nothing to go on. It is the one
 //               status every part of the page shows. The rest is steady() in status.js as the banner
 //               shows it: `until` the epoch ms it counts down to (null for none), `checking` a hold kept
 //               up after its prediction ended, `early` when that ended well before it was due, and
 //               `unsure` the hex of an aircraft lost while still due (null for none). Sent again when
-//               any of it changes, so at most once a poll while the state stays the same.
+//               any of it changes. `notHeard` is the hex of a current helicopter downgraded by the
+//               microphone (null for none); the state remains heads up.
 //   hfs:select  from anyone. detail: { hex } or { hex: null }. Everyone highlights that aircraft.
 //   hfs:tune    from listen.js. detail: { floor, trim, early, demo }: what the microphone has learned
 //               about this set and environment, with floor: null when that is nothing. `early: true`
@@ -94,6 +96,10 @@ document.addEventListener('hfs:share', (e) => {
 //               said, for the rest (null for nothing yet). poll() below widens each audible window by
 //               it (widen.js), to at most LATE_S: earlier starts when the sound came early, later ends
 //               when it came late, never the other way, and never a `lost` one. Not saved.
+//   hfs:audibility from listen.js. detail: { at, hexes }: current helicopters not heard after 20 s
+//               of continuous ready, real microphone listening. Any rise restores the hold for that
+//               window. Empty on stop, mute, background reset or set/environment change. Expires in
+//               2 s; no estimates, stale data or demo can downgrade a hold. Never saved or uploaded.
 //   hfs:share   from share.js. detail: { id, token }: the consented session being shared, or null. poll() below names it
 //               in its request, so the server keeps the feed it serves beside that session's log.
 const send = (name, detail) => document.dispatchEvent(new CustomEvent(name, { detail }));
@@ -104,6 +110,7 @@ const send = (name, detail) => document.dispatchEvent(new CustomEvent(name, { de
 // when the microphone has nothing to say any more (null while the slider is your own). An early floor
 // only stands in for your own level, so moving the slider under one sets that level too.
 let tuned = { floor: null, trim: {} };
+let audibility = null; // ephemeral microphone evidence, expires after two seconds
 let timing = { offsets: {}, lag: null }; // how late the feed has been running here (hfs:timing)
 const widened = new Map(); // hex -> the last window widened by it, kept to its widened end (widen.js)
 let offset = 0;
@@ -121,6 +128,7 @@ function endDemo() {
 // What was learned belongs to one set and one environment, so it is dropped when either changes.
 // listen.js then sends what it knows about the new one.
 function untune() {
+  audibility = null;
   endDemo();
   if (manual != null) form.floor.value = manual;
   tuned = { floor: null, trim: {} };
@@ -402,7 +410,7 @@ function fill(li, w, now) {
   }
   const lead = w.start - now;
   const confidence = w.lost || w.rough || w.phase === 'lined up on' ? 'low' : lead < 60_000 ? 'high' : lead < 180_000 ? 'medium' : 'low';
-  set('when', lead <= 0 ? 'Now' : mmss(lead));
+  set('when', w.notHeard ? 'Not heard' : lead <= 0 ? 'Now' : mmss(lead));
   set('lasts', lead <= 0 ? `${mmss(w.end - now)} left` : `for ${mmss(w.end - w.start)}`);
   set('doing', [kind, w.phase && `${w.phase} runway ${w.runway}`, where(w), w.lost && `contact lost ${mmss(now - w.seenAt)} ago`].filter(Boolean).join(', '));
   set('sure', `${w.lost ? 'estimate, ' : ''}${confidence} confidence`);
@@ -412,9 +420,10 @@ function render() {
   if (!site) return;
   placeBar();
   const now = Date.now();
-  shown = steady(status(windows, now, lastData, staleAfter(every)), now, shown, polledAt);
-  const { state, until, current, next, checking, early, unsure } = shown;
-  const said = { state, until: until ?? null, checking: !!checking, early: !!early, unsure: unsure?.hex ?? null };
+  const audible = notHeard(windows, audibility, now);
+  shown = steady(status(audible, now, lastData, staleAfter(every)), now, shown, polledAt);
+  const { state, until, current, next, checking, early, unsure, notHeard: quiet } = shown;
+  const said = { state, until: until ?? null, checking: !!checking, early: !!early, unsure: unsure?.hex ?? null, notHeard: quiet?.hex ?? null };
   if (JSON.stringify(said) !== told) {
     told = JSON.stringify(said);
     send('hfs:status', said);
@@ -436,7 +445,7 @@ function render() {
     return;
   }
 
-  const live = windows.filter((w) => w.end > now);
+  const live = audible.filter((w) => w.end > now);
   const hold = state === 'hold';
   // A hold is often several aircraft run together: say how long the first lasts, then the whole of it.
   const about = (h) => {
@@ -470,6 +479,8 @@ function render() {
     // neither a hold nor clear, and there is nothing to count down to.
     const then = next ? `Next: ${about(next)}` : '';
     show('soon', 'Heads up', '', 'an aircraft may still be audible', `${mayDepart}Listen before you roll: lost contact with ${label(unsure)} ${mmss(now - unsure.seenAt)} ago. ${then}`);
+  } else if (quiet) {
+    show('soon', 'Heads up', '', 'not heard', label(quiet));
   } else if (state === 'soon') {
     show('soon', 'Heads up', mmss(until - now), 'until an aircraft is audible', `${mayDepart}${about(next)}`);
   } else if (next) {
@@ -509,6 +520,7 @@ function render() {
     holding = false;
     // When the hold ends in "cannot tell", the lost-contact entry above has said so: there is no clear to log.
     if (unsure) holding = false;
+    else if (quiet) log('soon', `Not heard: ${label(quiet)}.`);
     else if (state === 'soon') log('soon', `Quiet for ${mmss(next.start - now)} only, then ${label(next.first)}.`);
     else log('clear', next ? `Clear. Next aircraft in ${mmss(next.start - now)}.` : 'Clear. Nothing else predicted.');
   }
@@ -549,6 +561,11 @@ document.addEventListener('hfs:tune', (e) => {
   save();
   showSetup();
   poll();
+});
+// Quiet evidence applies at once; its expiry restores predictions even if audio stops arriving.
+document.addEventListener('hfs:audibility', (e) => {
+  audibility = e.detail;
+  render();
 });
 // How late the feed has been running here. Taken up at the next poll, which works the windows out again.
 document.addEventListener('hfs:timing', (e) => (timing = { offsets: e.detail.offsets ?? {}, lag: e.detail.lag ?? null }));
