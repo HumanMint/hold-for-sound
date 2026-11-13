@@ -1,12 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ENVIRONMENTS as DEFAULT_ENVIRONMENTS, predict } from '../public/predict.js';
+import { ENVIRONMENTS, predict } from '../public/predict.js';
 import { remember, motion, KEEP_S, MAX_REPORTS } from '../public/motion.js';
 import { status } from '../public/status.js';
 import { follow } from '../public/lost.js';
-
-// shortcut: extra fixture shielding preserves quiet/near/far boundaries while testing motion.
-const ENVIRONMENTS = Object.fromEntries(Object.entries(DEFAULT_ENVIRONMENTS).map(([k, v]) => [k, { ...v, loss: v.loss + 5 }]));
 
 const T0 = 1_800_000_000_000;
 const site = { lat: 34, lon: -118, elevM: 0 };
@@ -102,7 +99,7 @@ test('a backtracking aircraft that slows with its position stuck is no takeoff',
     const told = status(windows.map((w) => ({ ...w, start: now + w.startS * 1000, end: now + w.endS * 1000 })), now, now);
     return [windows[0]?.phase, told.state, !!told.unsure];
   });
-  assert.deepEqual(got[1], ['taking off from', 'hold', false]);
+  assert.deepEqual(got[1], ['taking off from', 'hold', false]); // a roll at takeoff power is loud at once
   // Slower: only lined up, as it was before it sped up, and no takeoff is made up from a speed it no
   // longer has. Once its position is lost (20 s old) the page cannot tell. Never a hold.
   assert.deepEqual(got.slice(2), [
@@ -216,13 +213,13 @@ test('a circling helicopter is not expected nearer than it has been', () => {
 });
 
 test('a helicopter circling is expected back at the side of its circle nearest the set', () => {
-  // A 400 m orbit at 60 kt about a point 1.8 km east, at 1000 ft, seen at its far side: heard indoors
+  // A 400 m orbit at 60 kt about a point 1.5 km east, at 1000 ft, seen at its far side: heard indoors
   // only from the near side.
   const r = 400;
   const w = (60 * KT) / r;
   const at = (s) => {
     const a = Math.PI / 2 + w * (s - 60); // bearing from the centre: due east of it at the end
-    return row(1800 + r * Math.sin(a), r * Math.cos(a), { gs: 60, track: (((a / RAD + 90) % 360) + 360) % 360 });
+    return row(1500 + r * Math.sin(a), r * Math.cos(a), { gs: 60, track: (((a / RAD + 90) % 360) + 360) % 360 });
   };
   const { ac, m } = watch(at);
   assert.ok(m.circling);

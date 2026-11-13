@@ -10,6 +10,13 @@ import { weatherLevel } from './weather.js';
 const FT = 0.3048;
 const KT = 0.5144;
 const SOUND_MS = 343;
+// shortcut: the microphones are uncalibrated, so recorded passes give only differences between aircraft,
+// not absolute levels. Splitting out the source, propagation and weather terms made a jet landing about
+// 380 m from the set (the reference pass in every session so far, which the earlier model matched)
+// about 5.4 dB louder, and one passing 3000 ft overhead (never recorded) about 1.5 dB quieter. This takes
+// back about half of the first: such an arrival stays about 2.4 dB louder than before (warned early, the
+// safe side), and an overhead pass ends up about 1.5 dB quieter than the earlier, equally unmeasured, guess.
+const ANCHOR_DB = -3;
 const RAD = Math.PI / 180;
 
 export const HORIZON_S = 480;
@@ -327,7 +334,8 @@ export function predict(ac, site, { loss, floor, runways = [], landed = false, t
         source(ac, p, trim) +
         weatherLevel(weather, { bearing: Math.atan2(p.x, p.y) / RAD, elevation: beta, distance: dist, altitude: p.alt }, weatherAt) -
         propagation(dist, beta, lateralM, kind) -
-        wall;
+        wall +
+        ANCHOR_DB;
       samples.push({ t, heardAt, x: p.x, y: p.y, alt: p.alt, dist, db });
       if (db >= floor && !done) {
         win ??= { startS: heardAt, peakDb: -Infinity, ...(p.spread > ROUGH_DEG * RAD && { rough: true }) };

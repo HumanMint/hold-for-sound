@@ -13,14 +13,14 @@ const runways = [{ airport: 'TEST', ends: [{ id: '09', lat: 34, lon: lon(-5000) 
 // The page's side of a poll, as app.js does it: the feed's rows `s` seconds in go through follow(),
 // and the windows get their start and end in epoch ms. `s` relative to T0 keeps the numbers readable.
 // `age` is how old the answer is (seconds), as app.js passes it: already in each row's `seen_pos`.
-// shortcut: an extra 8 dB of outdoor fixture shielding keeps these passes on either side of the expiry boundary.
+// shortcut: an extra 4 dB of outdoor fixture shielding keeps these passes on either side of the expiry boundary.
 function watch(env = 'outdoors') {
   const known = new Map();
   return {
     known,
     poll(s, rows, age = 0) {
       const now = T0 + s * 1000;
-      const { tracks, windows } = follow(known, rows, now, site, () => ({ ...ENVIRONMENTS[env], loss: ENVIRONMENTS[env].loss + (env === 'outdoors' ? 8 : 0), runways }), age);
+      const { tracks, windows } = follow(known, rows, now, site, () => ({ ...ENVIRONMENTS[env], loss: ENVIRONMENTS[env].loss + (env === 'outdoors' ? 4 : 0), runways }), age);
       const sec = (ms) => (ms - T0) / 1000;
       return { now, tracks, windows: windows.map((w) => ({ ...w, start: now + w.startS * 1000, end: now + w.endS * 1000, from: sec(now + w.startS * 1000), to: sec(now + w.endS * 1000) })) };
     },
