@@ -52,6 +52,7 @@ Personal, non-commercial proof of concept: warn a film-set sound mixer before an
 
 - Notes that belong to one deployment (hosting, credentials' locations, analysis of shared sessions, plans) are kept outside this repository. When an `ops/` folder is present (git-ignored), read `ops/AGENTS.md` before starting; never commit anything from it here.
 - Commits carry no co-author lines. Keep comments, tests and docs free of people, machines, hosts and reviews.
+- Scratch space: delete your own scratch build trees, DerivedData copies and browser profiles when a run ends. Reuse the existing simulator devices instead of creating new ones; delete any temporary device you made (`xcrun simctl delete`). Check free disk space before a large run (builds, recordings, simulator matrices) and do not start one with under 20 GB free.
 
 - The page's words are labels and values. Add a description only where what something does is not otherwise obvious; no paragraphs explaining how the page works, reassurance, or helper text under controls. Explanation belongs in `README.md`.
 
